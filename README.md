@@ -9,6 +9,8 @@
 
 이 결과는 하루 전체 판매·취소·환불·결제·순매출이 아니다. 특히 `D / -1`인 143행도 원문 그대로 보존할 뿐 업무 의미를 확정하지 않는다.
 
+별도 Kafka 실험은 이 UCI 결과를 실시간화하지 않는다. 명시적인 소량 합성 이벤트만 사용해 **sink 저장 뒤 offset commit 전에 consumer가 종료되면 같은 이벤트가 다시 와도 합계가 불어나지 않는가**를 검증한다.
+
 ## 지금 실제로 이어지는 경로
 
 ```text
@@ -45,21 +47,21 @@ cd shopping-data-platform
 python3 -m venv .venv
 . .venv/bin/activate
 python -m pip install "duckdb==1.4.4" "openpyxl==3.1.5" "pytz==2025.2" "pytest>=9,<10>"
-pytest -q
+pytest -q tests/test_pipeline.py
 ```
 
-데이터를 받기 전에는 가공 테스트 자료로 16개 검사가 통과하고, 실제 UCI 파일을 읽는 1개 검사는 건너뛴다. 실제 자료로 실행하려면 [UCI 공식 다운로드](https://archive.ics.uci.edu/static/public/352/online%2Bretail.zip)에서 ZIP을 받아 `Online Retail.xlsx`만 `data/source/Online Retail.xlsx`에 둔다. 원본 파일은 저장소에 포함하지 않는다.
+데이터를 받기 전에는 가공 테스트 자료로 UCI 경로의 16개 검사가 통과하고, 실제 UCI 파일을 읽는 1개 검사는 건너뛴다. 실제 자료로 실행하려면 [UCI 공식 다운로드](https://archive.ics.uci.edu/static/public/352/online%2Bretail.zip)에서 ZIP을 받아 `Online Retail.xlsx`만 `data/source/Online Retail.xlsx`에 둔다. 원본 파일은 저장소에 포함하지 않는다.
 
 ```bash
 mkdir -p data/source
 # 내려받은 ZIP 안의 Online Retail.xlsx를 위 폴더에 둔 뒤 실행한다.
 python -m shopping_data run
 python tools/independent_check.py
-pytest -q
+pytest -q tests/test_pipeline.py
 python -m shopping_data serve
 ```
 
-파이프라인은 실행 전에 `config/source.json`의 SHA-256과 파일을 대조한다. 기대 지문은 `43465a06f2ccf7c8b5bd2892bc7defb52f97487934fe93b16ae4c3936424676d`이며 다르면 중단한다. `independent_check.py`는 별도 openpyxl 계산값을 출력하고, 실제 UCI 테스트는 이와 같은 독립 계산을 SQL 결과와 대조한다. 파일을 받은 뒤에는 실제 원본 검사를 포함해 17개 검사가 실행된다.
+파이프라인은 실행 전에 `config/source.json`의 SHA-256과 파일을 대조한다. 기대 지문은 `43465a06f2ccf7c8b5bd2892bc7defb52f97487934fe93b16ae4c3936424676d`이며 다르면 중단한다. `independent_check.py`는 별도 openpyxl 계산값을 출력하고, 실제 UCI 테스트는 이와 같은 독립 계산을 SQL 결과와 대조한다. 파일을 받은 뒤에는 실제 원본 검사를 포함해 UCI 경로의 17개 검사가 실행된다.
 
 같은 파일에서 선택 범위만 바꾸는 실행 예는 다음과 같다. 행 순서는 범위의 뜻을 바꾸지 않으므로 `--rows 3,2`는 `[2,3]`으로 정규화된다.
 
@@ -90,6 +92,60 @@ python -m shopping_data run --rows 3,2
 
 이 검증은 Python이 잡은 예외와 별도로 **로컬 처리 프로세스가 종료된 경우**를 다룬다. 현재 DuckDB 1.4.4에서는 살아 있는 별도 writer가 DB 파일을 잡는 동안 다른 프로세스의 read-only 연결도 실패할 수 있으므로, 처리 중에도 별도 UI 프로세스가 계속 읽을 수 있다고 약속하지 않는다. 프로세스 종료로 DuckDB와 `flock` 잠금이 풀린 뒤에는 마지막 정상 결과를 다시 읽고 복구할 수 있다. OS·전원 종료, 디스크 flush 손실, 파일시스템 고장까지의 내구성을 증명한 것은 아니다.
 
+## 실제 Kafka 재전달 실험
+
+기본 재전달·충돌·늦은 입력과 빈 sink의 진행 위치 불일치, UTC 시각, 큰 정수 합계 반례를 검증한 로컬 실험이다. 실제 broker에서 두 consumer 종료 경계를 재현하고, 빈 sink는 처리 성공으로 표시하지 않고 거부하는 것을 확인했다. 이 실험의 이벤트·날짜·중복 계약은 아래 합성 입력에 한정한다.
+
+Kafka 실험의 원 이벤트는 [`config/kafka-events.jsonl`](config/kafka-events.jsonl), 전달 순서는 [`config/kafka-deliveries.jsonl`](config/kafka-deliveries.jsonl), 같은 ID·다른 내용 반례는 [`config/kafka-conflict-event.json`](config/kafka-conflict-event.json)이다. 원 이벤트의 `event_id`·내용 지문과 Kafka 전달 위치 `topic / partition / offset`을 분리한다.
+
+- `event_id + 같은 내용 지문`: 재전달로 기록하고 `kafka_events`에는 한 번만 등록한다.
+- `event_id + 다른 내용 지문`: 충돌로 기록하고 처리와 offset 전진을 중단한다.
+- 이 규칙은 합성 이벤트 계약이다. UCI 청구·거래 중복 정책이 아니다.
+- sink는 `cluster / group / topic / partition`과 다음에 처리할 offset을 한 번 결합한다. 이벤트 등록·전달 시도·다음 offset 갱신은 한 DuckDB transaction에 두고, Kafka offset은 그 transaction 성공 뒤 `commit(message, asynchronous=False)`로 별도 commit한다.
+- 빈 sink인데 같은 group이 이미 앞서 있거나, broker가 sink보다 앞서 있거나, 로그 보존 시작점이 sink 뒤로 넘어간 경우에는 성공·자동 reset·자동 재구축을 추정하지 않고 중단한다. 반대로 sink 저장만 끝나 broker가 한 위치 뒤인 의도한 중단 창은 같은 위치의 정확한 이벤트를 재전달할 때만 허용한다.
+- `occurred_at`은 초 단위 이상을 포함한 `Z` UTC 시각만 받고 날짜뿐인 값·timezone 없는 값은 거부한다. 개별 수량은 signed BIGINT 범위를 확인하되 `SUM`은 DuckDB의 더 넓은 정확한 정수 결과를 다시 BIGINT로 줄이지 않는다.
+
+한 partition·한 consumer의 실제 흐름은 다음과 같다.
+
+```text
+Kafka offsets 0~3에 초기 네 번 전달
+→ offset 0을 sink에 commit
+→ offset commit 전 consumer PID만 SIGKILL
+→ broker committed offset은 없음(-1001), sink에는 evt-1001 한 건 존재
+→ 같은 group 재시작이 offset 0을 다시 읽어 redelivery 처리
+→ offsets 0~3 처리 뒤 committed next offset=4
+→ 같은 group에 새 빈 sink를 연결하면 broker=4 / sink 없음 불일치로 거부
+→ 늦은 evt-1003을 offset 4에서 sink 저장하고 broker committed=5까지 마친 뒤, 로컬 audit 전 consumer PID를 다시 SIGKILL
+→ 재시작은 broker=5 / sink next=5를 대조해 이벤트를 다시 받지 않고 중단 이력만 복구
+→ evt-1002와 내용이 다른 반례를 offset 5에서 두 번 읽지만 committed=5 유지
+```
+
+최종 sink와 독립 Python·DuckDB SQL 배치는 모두 다음 합계와 일치했다.
+
+| 발생일(UTC) | 상품 | 부호 있는 수량 합계 | 고유 이벤트 수 |
+|---|---:|---:|---:|
+| 2026-09-21 | `W-104` | 4 | 1 |
+| 2026-09-22 | `B-208` | -1 | 1 |
+| 2026-09-22 | `W-104` | 5 | 2 |
+
+여기서 늦게 전달된 `evt-1003`은 도착한 날이 아니라 원 이벤트의 UTC 발생일 `2026-09-21` 결과를 새로 만든다. 초기 전달에서도 10:05 이벤트 다음에 09:40 이벤트를 넣어 발생시각 역순이 Kafka offset 순서와 다름을 보존했다.
+
+실행은 Apache 공식 배포 파일인 `kafka_2.13-4.1.2.tgz`를 사용한다. [`config/kafka-runtime.json`](config/kafka-runtime.json)의 공식 SHA-512를 확인한 뒤 `var/kafka/`에만 보존·압축 해제한다. Java 17, 프로젝트 전용 단일 KRaft broker, 256 MiB heap, `127.0.0.1:19092/19093`, 한 partition·복제 1로 제한한다. Docker·공유 daemon·전역 설치는 사용하지 않는다.
+
+```bash
+python -m pip install "confluent-kafka==2.3.0"
+kafka_run_root="$(mktemp -d -p /tmp shopping-kafka-runtime-XXXXXXXX)"
+python tools/run_kafka_experiment.py --run-root "$kafka_run_root"
+```
+
+도구는 broker·controller port가 이미 사용 중이면 다른 프로세스를 종료하지 않고 실패한다. 새거나 빈 실험 디렉터리만 format하며 종료 시 자신이 시작한 broker와 consumer만 멈춘다. 성공하면 해당 디렉터리의 `experiment-result.json`, `sink.duckdb`, `broker.log`를 보존한다.
+
+첫 실제 기동에서는 broker port와 metadata 응답이 준비된 직후에도 내부 consumer group coordinator가 아직 로딩 중이어서 `NOT_COORDINATOR`로 멈췄다. 실패한 실험 디렉터리를 지우지 않고 보존했으며, 현재 실행기는 metadata 확인과 별도로 coordinator가 committed offset 요청에 응답할 때까지 제한된 횟수로 기다린다. 응답의 partition별 오류도 진행 위치로 사용하지 않는다. 따라서 "broker에 연결됨"과 "consumer group을 복구할 준비가 됨"을 같은 상태로 취급하지 않는다.
+
+Python client는 이미 설치된 `confluent-kafka 2.3.0 / librdkafka 2.3.0`을 사용했다. `enable.auto.commit=false`와 `enable.auto.offset.store=false`를 함께 고정한다. 공식 Python API가 설명하듯 `commit(message)`는 다음 offset을 동기 commit하고, `close()`는 auto commit이 꺼져 있으면 offset을 commit하지 않는다. Apache 프로토콜의 API-version 협상·librdkafka의 broker 호환 설명뿐 아니라 실제 4.1.2 연결, produce, classic consumer group, synchronous commit까지 직접 확인했다.
+
+이것은 외부 DuckDB와 Kafka offset을 하나의 원자 transaction으로 묶은 exactly-once 보장이 아니다. **Kafka는 적어도 한 번 다시 전달할 수 있고, sink가 immutable event ID로 같은 내용을 멱등 처리해 최종 값을 맞춘 실험**이다. 단일 broker·복제 1이므로 broker 장애, 전원·디스크 손실, 여러 partition의 순서·rebalance, 운영 부하도 검증하지 않았다.
+
 UCI의 공식 변수 설명은 `InvoiceNo`가 `C`로 시작하면 cancellation이라고 설명한다. 현재 구현은 [공식 데이터셋 설명](https://archive.ics.uci.edu/dataset/352/online+retail)에 근거해, 원문 `InvoiceNo`를 바꾸지 않고 관찰용 표시만 만든다.
 
 - 숫자형 청구번호는 텍스트와 함께 `integer`, 문자형은 `text`라는 원본 셀 종류를 보존한다. 그 밖의 지원하지 않는 셀 타입은 원문 텍스트를 지우지 않되 표시를 `unknown`으로 둔다.
@@ -111,7 +167,10 @@ UCI의 공식 변수 설명은 `InvoiceNo`가 `C`로 시작하면 cancellation�
 
 ```bash
 pytest -q
+python tools/run_kafka_experiment.py --run-root "$(mktemp -d -p /tmp shopping-kafka-runtime-XXXXXXXX)"
 ```
+
+UCI 파일이 있는 환경에서 전체 테스트 33개가 통과했다. 실제 Kafka 실행은 위 재현 명령으로 별도로 검증하며, 단위 테스트 통과가 broker 실행을 대신하지 않는다.
 
 검사는 다음 주장을 서로 다른 근거로 확인한다.
 
@@ -131,17 +190,24 @@ pytest -q
 - 상세 단가는 임의의 소수 자릿수로 반올림하거나 자르지 않고 원본에서 읽은 문자열을 보여 준다. 금액 계산·반올림 규칙은 아직 정하지 않았다.
 - 수량 `0`이 있는 행과 해당 상품 행이 아예 없는 상태를 구별한다.
 - 생성 JSON과 화면 데이터에 `CustomerID`가 포함되지 않는다.
+- Kafka 합성 이벤트의 같은 ID·같은 내용은 offset이 같거나 달라도 sink 합계를 늘리지 않고, 같은 ID·다른 내용은 충돌로 멈춰 committed offset을 전진시키지 않는다.
+- 실제 broker에서 sink commit 뒤 offset commit 전 consumer를 강제 종료하면 같은 group이 같은 offset을 다시 읽으며, 최종 sink가 독립 Python·SQL 배치와 일치한다.
+- broker group이 앞선 새 빈 sink는 실패하고, sink와 broker가 함께 offset `5`까지 간 뒤 로컬 audit 전에 종료된 실행은 재시작 때 성공 위치를 되돌리거나 이벤트를 중복 적용하지 않는다.
+- 날짜만 있거나 timezone 없는 발생시각과 signed BIGINT 밖의 단일 수량을 저장 전에 거부하며, 두 `BIGINT_MAX`의 합도 축소 없이 독립 계산과 일치한다.
+- 발생시각 역순과 늦은 입력을 전달 순서와 구별하고, 늦은 이벤트가 바꾼 UTC 날짜를 결과에서 확인한다.
 
 ## 아직 구현하지 않은 것
 
 - UCI 전체 파일의 품질 조사와 데이터셋 최종 채택
 - 판매·취소 원거래 연결, 중복 거래 판별, 영업일·시간대, 금액 반올림 계약
 - dbt·Airflow·PostgreSQL 채택
-- Kafka producer/consumer와 중복·역순·offset commit 전 중단 복구
+- Kafka 여러 partition·consumer rebalance, schema 진화, 외부 DB와 offset의 원자적 exactly-once 처리
 - Spark의 통제된 규모·분포·실행 계획 비교
 - 실제 운영 DB, 클라우드, 배포
 
-다음 도구는 이름 순서로 붙이지 않는다. 현재 DuckDB 배치 결과가 Kafka 결과를 대조할 기준이 되며, Kafka 단계에서는 실제 broker·producer·consumer를 실행해 중단과 재개 뒤 최종 저장 결과를 비교한다. PostgreSQL은 다중 프로세스 쓰기와 서비스 제공 경계가 필요할 때, Spark는 같은 결과의 규모 비교가 필요할 때 연다.
+다음 재개는 `실제 Kafka 재전달 실험`의 재현 명령과 `kafka_sink_checkpoint`에서 시작한다. 현재 저장소·broker 위치와 두 중단 경계의 차이를 확인한 뒤 후속 범위를 정한다. 여러 consumer·규모 비교는 아직 검증한 기능이 아니다.
+
+다음 도구는 이름 순서로 붙이지 않는다. PostgreSQL은 Kafka offset과 별개인 다중 프로세스 sink·서비스 제공 경계를 실제로 비교할 필요가 있을 때, Spark는 같은 결과의 규모 비교가 필요할 때 연다.
 
 ## 데이터 출처와 공개 범위
 
@@ -149,6 +215,6 @@ pytest -q
 
 공개 코드에는 원본 Excel·로컬 DB·생성 JSON·고객 식별값·개인 실행 경로를 포함하지 않는다. 테스트의 `ROWS`는 공개 원천 일부를 바탕으로 고객 식별자를 가상 값 `TEST-CUSTOMER`로 교체하고 0·누락·잘못된 타입·공백 등 반례를 추가한 가공 자료다. 해당 원천에서 유래한 데이터에는 위 출처와 CC BY 4.0이 적용되며 실제 전체 원천 또는 Kafka 사건 자료로 보지 않는다. 로컬에서 별도로 받은 원본과 DB에는 원천 `CustomerID`가 남을 수 있으나 결과 JSON·화면에는 제공하지 않는다.
 
-이 게시본은 원본 추적·선택 범위 재처리·원천 취소 표시·프로세스 중단 복구까지 검증한 로컬 구현이다. Kafka 진행 코드와 실행파일은 이번 게시본에 포함하지 않으며 완료 경험으로 주장하지 않는다. 공개 웹 서비스나 운영 환경 배포도 아니다.
+[GitHub 첫 게시](https://github.com/junhyun-dev/shopping-data-platform/tree/6111db04ba383d9098665bd5f9682de7c7bf5c4c)는 원본 추적·선택 범위 재처리·원천 취소 표시·프로세스 중단 복구까지 검증한 로컬 구현이다. 현재 코드에는 별도로 검증한 Kafka 합성 이벤트·체크포인트·재전달 실험도 포함한다. Apache Kafka 배포 파일, broker 데이터, 로컬 실행 결과는 Git에 포함하지 않는다. 공개 웹 서비스나 운영 환경 배포는 아니다.
 
 프로젝트 코드의 재사용 라이선스는 아직 지정하지 않았다. 데이터의 CC BY 4.0을 코드 전체의 라이선스로 해석하지 않는다.

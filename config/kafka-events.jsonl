@@ -1,0 +1,4 @@
+{"event_id":"evt-1001","product_code":"W-104","occurred_at":"2026-09-22T10:05:00Z","quantity":3}
+{"event_id":"evt-1002","product_code":"W-104","occurred_at":"2026-09-22T09:40:00Z","quantity":2}
+{"event_id":"evt-2001","product_code":"B-208","occurred_at":"2026-09-22T11:10:00Z","quantity":-1}
+{"event_id":"evt-1003","product_code":"W-104","occurred_at":"2026-09-21T23:55:00Z","quantity":4}

@@ -1,0 +1,5 @@
+{"delivery_id":"delivery-0001","phase":"initial","event_id":"evt-1001"}
+{"delivery_id":"delivery-0002","phase":"initial","event_id":"evt-1002"}
+{"delivery_id":"delivery-0003","phase":"initial","event_id":"evt-1001"}
+{"delivery_id":"delivery-0004","phase":"initial","event_id":"evt-2001"}
+{"delivery_id":"delivery-0005","phase":"late","event_id":"evt-1003"}

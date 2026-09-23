@@ -1,0 +1,12 @@
+{
+  "apache_kafka_version": "4.1.2",
+  "scala_version": "2.13",
+  "archive_file": "kafka_2.13-4.1.2.tgz",
+  "download_url": "https://downloads.apache.org/kafka/4.1.2/kafka_2.13-4.1.2.tgz",
+  "sha512": "78ac6e488b1071122f9608dfdb363f6fe50e1dbbc492347002c0398dfbf77e0d8caa5bf794c5937379721004dfe92025937d238b0faf4eb715529417fd43b491",
+  "official_downloads_url": "https://kafka.apache.org/community/downloads/",
+  "official_quickstart_url": "https://kafka.apache.org/41/getting-started/quickstart/",
+  "official_compatibility_url": "https://kafka.apache.org/41/getting-started/compatibility/",
+  "python_client": "confluent-kafka 2.3.0 / librdkafka 2.3.0",
+  "python_client_docs_url": "https://docs.confluent.io/platform/current/clients/confluent-kafka-python/html/index.html"
+}
