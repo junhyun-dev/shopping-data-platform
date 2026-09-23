@@ -1,0 +1,9 @@
+{
+  "dataset": "UCI Online Retail",
+  "source_url": "https://archive.ics.uci.edu/dataset/352/online+retail",
+  "local_file": "data/source/Online Retail.xlsx",
+  "expected_sha256": "43465a06f2ccf7c8b5bd2892bc7defb52f97487934fe93b16ae4c3936424676d",
+  "sheet": "Online Retail",
+  "selected_excel_rows": [2, 3, 4, 5, 6, 7, 8, 143],
+  "scope_note": "Only the listed Excel rows are loaded. This is not a whole-day or full-dataset aggregate."
+}

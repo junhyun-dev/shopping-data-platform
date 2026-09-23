@@ -1,0 +1,19 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+*.egg-info/
+build/
+dist/
+
+# Local source data and all runtime artifacts stay out of Git.
+data/
+var/
+published/
+*.duckdb
+*.duckdb.wal
+*.writer.lock
+
+# Local credentials and environment overrides.
+.env
+.env.*

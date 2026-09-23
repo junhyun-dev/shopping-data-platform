@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>상품 데이터 데스크 · 실제 표본 결과</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <span class="brand-mark">SD</span>
+        <span><strong>상품 데이터 데스크</strong><small>로컬 첫 구현</small></span>
+      </div>
+      <nav aria-label="주요 화면">
+        <p class="nav-label">업무</p>
+        <button class="nav-button is-active" data-view="overview"><span>01</span>표본 결과</button>
+        <button class="nav-button" data-view="quality"><span>02</span>데이터 점검</button>
+        <button class="nav-button" data-view="runs"><span>03</span>처리 이력</button>
+      </nav>
+      <div class="source-note">
+        <strong>실제 UCI 한정 표본</strong>
+        <span>실행별로 고른 Excel 행만 계산합니다. 하루 전체 결과가 아닙니다.</span>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">UCI ONLINE RETAIL · OBSERVED SAMPLE</p>
+          <h1>상품별 표본 수량 결과</h1>
+        </div>
+        <span id="resultBadge" class="status-badge">결과 읽는 중</span>
+      </header>
+
+      <section id="loadingState" class="message-state" aria-live="polite">
+        마지막 정상 결과를 읽고 있습니다.
+      </section>
+      <section id="errorState" class="message-state is-error" hidden aria-live="assertive">
+        <strong id="errorTitle">결과를 읽지 못했습니다.</strong>
+        <span id="errorMessage"></span>
+        <code>python -m shopping_data run</code>
+      </section>
+
+      <section id="overviewView" class="view" hidden>
+        <div class="context-strip">
+          <dl><dt>자료 범위</dt><dd id="scopeText">-</dd></dl>
+          <dl><dt>묶은 날짜</dt><dd id="dateBasisText">-</dd></dl>
+          <dl><dt>결과 실행</dt><dd id="runText">-</dd></dl>
+        </div>
+
+        <div class="workspace-grid">
+          <section class="table-workspace" aria-labelledby="tableTitle">
+            <div class="section-head">
+              <div>
+                <h2 id="tableTitle">표본에 나타난 상품</h2>
+                <p>수량 합계와 관찰 행 수는 서로 다른 숫자입니다.</p>
+              </div>
+              <label class="filter-label">
+                <span>상품 코드 찾기</span>
+                <input id="productFilter" type="search" placeholder="예: 85123A" autocomplete="off">
+              </label>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th scope="col">원문 날짜</th>
+                    <th scope="col">상품 코드</th>
+                    <th scope="col" class="number">표본 수량 합계</th>
+                    <th scope="col" class="number">관찰 행 수</th>
+                    <th scope="col"><span class="sr-only">상세</span></th>
+                  </tr>
+                </thead>
+                <tbody id="productRows"></tbody>
+              </table>
+              <p id="filterEmpty" class="inline-empty" hidden>이 표본에 해당 상품이 없습니다. `0`으로 계산한 것이 아닙니다.</p>
+            </div>
+          </section>
+
+          <aside id="detailPanel" class="detail-panel" aria-labelledby="detailTitle">
+            <div class="detail-head">
+              <div>
+                <p class="eyebrow">선택한 결과의 근거</p>
+                <h2 id="detailTitle">상품을 선택하세요</h2>
+              </div>
+              <span id="detailLocation" class="detail-location">-</span>
+            </div>
+            <div id="detailMetrics" class="metric-line" hidden>
+              <dl><dt>표본 수량 합계</dt><dd id="detailQuantity">-</dd></dl>
+              <dl><dt>관찰 행 수</dt><dd id="detailRowCount">-</dd></dl>
+            </div>
+            <p id="detailHelp" class="detail-help">왼쪽 표의 상품을 누르면 어떤 Excel 행이 숫자에 들어갔는지 확인할 수 있습니다.</p>
+
+            <div id="detailBody" hidden>
+              <div class="tabs" role="tablist" aria-label="결과 근거">
+                <button class="tab is-active" data-tab="rows" role="tab" aria-selected="true">기여한 거래</button>
+                <button class="tab" data-tab="source" role="tab" aria-selected="false">원본 위치</button>
+                <button class="tab" data-tab="sql" role="tab" aria-selected="false">적용 SQL</button>
+              </div>
+              <div id="rowsTab" class="tab-panel"></div>
+              <div id="sourceTab" class="tab-panel" hidden></div>
+              <div id="sqlTab" class="tab-panel" hidden><pre><code id="sqlText"></code></pre></div>
+            </div>
+          </aside>
+        </div>
+      </section>
+
+      <section id="qualityView" class="view" hidden>
+        <div class="section-head compact">
+          <div>
+            <h2>데이터 점검</h2>
+            <p>성공한 척하지 않고, 지금 결과가 보장하는 범위와 보장하지 않는 범위를 나눕니다.</p>
+          </div>
+        </div>
+        <div id="qualityRows" class="check-list"></div>
+      </section>
+
+      <section id="runsView" class="view" hidden>
+        <div class="section-head compact">
+          <div>
+            <h2>처리 이력</h2>
+            <p>재처리 버튼은 아직 없습니다. 실제 실행은 저장소에서 명령으로 수행하며 성공한 결과만 현재 화면에 연결됩니다.</p>
+          </div>
+          <code>python -m shopping_data run</code>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>실행 ID</th><th>상태</th><th>시작</th><th>완료·오류</th></tr></thead>
+            <tbody id="runRows"></tbody>
+          </table>
+        </div>
+        <section class="comparison-workspace" aria-labelledby="comparisonTitle">
+          <div class="comparison-head">
+            <div>
+              <h3 id="comparisonTitle">완료 결과 비교</h3>
+              <p>성공해 공개된 두 결과만 비교합니다. 추가·빠진 위치는 두 결과에 포함된 원본 위치의 차이이며, 판매 제외·취소 판단은 아닙니다.</p>
+            </div>
+            <div class="comparison-controls">
+              <label><span>이전 결과</span><select id="baseResult"></select></label>
+              <label><span>현재 결과</span><select id="currentResult"></select></label>
+              <button id="compareButton" type="button">변화 확인</button>
+            </div>
+          </div>
+          <p id="comparisonState" class="comparison-state">비교할 완료 결과를 읽는 중입니다.</p>
+          <div id="comparisonTable" class="table-wrap" hidden>
+            <table>
+              <thead>
+                <tr>
+                  <th>원문 날짜</th>
+                  <th>상품 코드</th>
+                  <th class="number">이전 수량 / 행</th>
+                  <th class="number">현재 수량 / 행</th>
+                  <th>포함 행 변화</th>
+                </tr>
+              </thead>
+              <tbody id="comparisonRows"></tbody>
+            </table>
+          </div>
+        </section>
+      </section>
+    </main>
+  </div>
+  <script src="/app.js" defer></script>
+</body>
+</html>

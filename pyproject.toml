@@ -1,0 +1,18 @@
+[project]
+name = "shopping-data-platform"
+version = "0.1.0"
+description = "Traceable local shopping-data pipeline and result viewer"
+requires-python = ">=3.10"
+dependencies = [
+  "duckdb==1.4.4",
+  "openpyxl==3.1.5",
+  "pytz==2025.2",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=9,<10"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-ra"
