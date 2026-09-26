@@ -16,6 +16,7 @@ JOIN run_input_rows AS i
  AND i.sheet_name = t.sheet_name
  AND i.source_row_number = t.source_row_number
 WHERE i.run_id = ?
-  AND t.stock_code = ?
-  AND CAST(t.invoice_timestamp AS DATE) = ?
-ORDER BY t.source_row_number;
+ORDER BY
+    CAST(t.invoice_timestamp AS DATE),
+    t.stock_code,
+    t.source_row_number;

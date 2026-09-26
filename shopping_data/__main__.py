@@ -13,6 +13,7 @@ from .config import (
 )
 from .pipeline import run_pipeline
 from .server import serve
+from .source_meaning import DEFAULT_SOURCE_MEANING_ROWS, observe_source_meaning
 
 
 def parse_rows(value: str) -> list[int]:
@@ -44,6 +45,19 @@ def build_parser() -> argparse.ArgumentParser:
     web.add_argument("--database", type=Path, default=DEFAULT_DATABASE)
     web.add_argument("--published-root", type=Path, default=DEFAULT_PUBLISHED_ROOT)
     web.add_argument("--port", type=int, default=8765)
+
+    observation = subcommands.add_parser(
+        "observe-source-meaning",
+        help="compare source-marker groups in an isolated temporary run",
+    )
+    observation.add_argument("--source", type=Path, default=DEFAULT_SOURCE)
+    observation.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
+    observation.add_argument(
+        "--rows",
+        type=parse_rows,
+        default=list(DEFAULT_SOURCE_MEANING_ROWS),
+        help="comma-separated Excel rows; defaults to 2,143,156",
+    )
     return parser
 
 
@@ -72,6 +86,15 @@ def main() -> None:
             ],
         }
         print(json.dumps(summary, ensure_ascii=False, indent=2))
+        return
+
+    if args.command == "observe-source-meaning":
+        result = observe_source_meaning(
+            source_path=args.source,
+            manifest_path=args.manifest,
+            selected_rows=args.rows,
+        )
+        print(json.dumps(result, ensure_ascii=False, indent=2))
         return
 
     serve(

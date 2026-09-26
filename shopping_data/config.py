@@ -11,6 +11,10 @@ SCHEMA_SQL = PROJECT_ROOT / "sql" / "schema.sql"
 TRANSFORMATION_SQL = PROJECT_ROOT / "sql" / "typed_transaction_lines.sql"
 AGGREGATE_SQL = PROJECT_ROOT / "sql" / "sample_product_daily.sql"
 CONTRIBUTIONS_SQL = PROJECT_ROOT / "sql" / "contribution_rows.sql"
+SOURCE_CANCELLATION_BREAKDOWN_SQL = (
+    PROJECT_ROOT / "sql" / "source_cancellation_marker_breakdown.sql"
+)
+SOURCE_MEANING_SQL = PROJECT_ROOT / "sql" / "source_meaning_observation.sql"
 KAFKA_RUNTIME_CONFIG = PROJECT_ROOT / "config" / "kafka-runtime.json"
 KAFKA_EVENTS = PROJECT_ROOT / "config" / "kafka-events.jsonl"
 KAFKA_DELIVERIES = PROJECT_ROOT / "config" / "kafka-deliveries.jsonl"

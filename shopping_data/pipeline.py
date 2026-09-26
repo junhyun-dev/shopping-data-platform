@@ -18,6 +18,7 @@ from .config import (
     AGGREGATE_SQL,
     CONTRIBUTIONS_SQL,
     SCHEMA_SQL,
+    SOURCE_CANCELLATION_BREAKDOWN_SQL,
     TRANSFORMATION_SQL,
 )
 
@@ -444,20 +445,91 @@ def _build_result(
     aggregate_sql = AGGREGATE_SQL.read_text(encoding="utf-8").strip()
     transformation_sql = TRANSFORMATION_SQL.read_text(encoding="utf-8").strip()
     contribution_sql = CONTRIBUTIONS_SQL.read_text(encoding="utf-8").strip()
+    marker_breakdown_sql = SOURCE_CANCELLATION_BREAKDOWN_SQL.read_text(
+        encoding="utf-8"
+    ).strip()
     aggregate_rows = connection.execute(aggregate_sql, [run_id]).fetchall()
+    marker_breakdown_rows = connection.execute(
+        marker_breakdown_sql, [run_id]
+    ).fetchall()
+    contribution_rows = connection.execute(contribution_sql, [run_id]).fetchall()
+
+    contributions_by_product: dict[
+        tuple[date, str], list[tuple[Any, ...]]
+    ] = {}
+    for row in contribution_rows:
+        contribution_key = (row[8].date(), row[5])
+        contributions_by_product.setdefault(contribution_key, []).append(row)
+
+    marker_breakdowns: dict[tuple[date, str], list[dict[str, Any]]] = {}
+    for (
+        observed_date,
+        stock_code,
+        source_cancellation_marker,
+        signed_quantity_sum,
+        observed_row_count,
+        contributing_excel_rows,
+    ) in marker_breakdown_rows:
+        if source_cancellation_marker not in {"true", "false", "unknown"}:
+            raise PipelineFailure(
+                "unexpected source cancellation marker in breakdown: "
+                f"{source_cancellation_marker}"
+            )
+        marker_breakdowns.setdefault((observed_date, stock_code), []).append(
+            {
+                "source_cancellation_marker": source_cancellation_marker,
+                "signed_quantity_sum_text": str(int(signed_quantity_sum)),
+                "observed_row_count": int(observed_row_count),
+                "contributing_excel_rows": [
+                    int(row_number) for row_number in contributing_excel_rows
+                ],
+            }
+        )
 
     products: list[dict[str, Any]] = []
     for _, observed_date, stock_code, quantity_sum, row_count in aggregate_rows:
-        contributions = connection.execute(
-            contribution_sql, [run_id, stock_code, observed_date]
-        ).fetchall()
+        contributions = contributions_by_product.pop(
+            (observed_date, stock_code), []
+        )
+        breakdown_groups = marker_breakdowns.pop((observed_date, stock_code), None)
+        if not breakdown_groups:
+            raise PipelineFailure(
+                "source cancellation marker breakdown is missing for "
+                f"{observed_date.isoformat()} / {stock_code}"
+            )
+        breakdown_quantity_sum = sum(
+            int(group["signed_quantity_sum_text"]) for group in breakdown_groups
+        )
+        breakdown_row_count = sum(
+            group["observed_row_count"] for group in breakdown_groups
+        )
+        breakdown_source_rows = sorted(
+            row_number
+            for group in breakdown_groups
+            for row_number in group["contributing_excel_rows"]
+        )
+        contribution_source_rows = sorted(int(row[1]) for row in contributions)
+        if (
+            breakdown_quantity_sum != int(quantity_sum)
+            or breakdown_row_count != int(row_count)
+            or breakdown_source_rows != contribution_source_rows
+        ):
+            raise PipelineFailure(
+                "source cancellation marker breakdown does not reconcile with "
+                f"the product result for {observed_date.isoformat()} / {stock_code}"
+            )
         products.append(
             {
                 "data_state": "available",
                 "observed_date": observed_date.isoformat(),
                 "stock_code": stock_code,
                 "sample_quantity_sum": int(quantity_sum),
+                "sample_quantity_sum_text": str(int(quantity_sum)),
                 "observed_row_count": int(row_count),
+                "source_cancellation_marker_breakdown": {
+                    "data_state": "available",
+                    "groups": breakdown_groups,
+                },
                 "contributing_rows": [
                     {
                         "sheet": row[0],
@@ -468,6 +540,7 @@ def _build_result(
                         "stock_code": row[5],
                         "description": row[6],
                         "quantity": int(row[7]),
+                        "quantity_integer_text": str(int(row[7])),
                         "invoice_timestamp": _format_timestamp(row[8]),
                         "unit_price_source_text": row[9],
                         "country": row[10],
@@ -475,6 +548,26 @@ def _build_result(
                     for row in contributions
                 ],
             }
+        )
+
+    if contributions_by_product:
+        unexpected = ", ".join(
+            f"{observed_date.isoformat()} / {stock_code}"
+            for observed_date, stock_code in sorted(contributions_by_product)
+        )
+        raise PipelineFailure(
+            "contribution rows contain product results that are absent from "
+            f"the aggregate: {unexpected}"
+        )
+
+    if marker_breakdowns:
+        unexpected = ", ".join(
+            f"{observed_date.isoformat()} / {stock_code}"
+            for observed_date, stock_code in sorted(marker_breakdowns)
+        )
+        raise PipelineFailure(
+            "source cancellation marker breakdown contains product results "
+            f"that are absent from the aggregate: {unexpected}"
         )
 
     return {
@@ -530,8 +623,32 @@ def _build_result(
                 "discount classification",
             ],
         },
+        "source_cancellation_marker_breakdown_contract": {
+            "grain": (
+                "Source-displayed InvoiceDate date portion, StockCode, and the "
+                "derived source cancellation marker for this run's selected rows."
+            ),
+            "description_boundary": (
+                "Description stays on each contributing source row and does not "
+                "become a product key or product-result grouping field."
+            ),
+            "absence": (
+                "A marker state omitted from one product's groups has no selected "
+                "source row; it is not a zero-valued observed group."
+            ),
+            "not_claimed": [
+                "confirmed sale quantity",
+                "product cancellation quantity",
+                "original transaction link",
+                "refund or payment state",
+            ],
+        },
+        "source_cancellation_marker_breakdown_rule_id": _sql_rule_id(
+            marker_breakdown_sql
+        ),
         "applied_transformation_sql": transformation_sql,
         "applied_sql": aggregate_sql,
+        "applied_source_cancellation_marker_breakdown_sql": marker_breakdown_sql,
         "products": products,
     }
 
@@ -880,9 +997,33 @@ def _load_published_result(
     if not artifact.is_relative_to(published_root):
         raise ResultReadError("published artifact points outside the result directory")
     try:
-        return json.loads(artifact.read_text(encoding="utf-8")), bool(row[1])
+        result = json.loads(artifact.read_text(encoding="utf-8"))
     except Exception as exc:
         raise ResultReadError(f"published result could not be read: {exc}") from exc
+    if not isinstance(result, dict) or not isinstance(result.get("run"), dict):
+        raise ResultReadError("published result does not contain run metadata")
+    returned_run_id = result["run"].get("run_id")
+    if returned_run_id != run_id:
+        raise ResultReadError(
+            "published result run id does not match the requested run: "
+            f"requested {run_id}, found {returned_run_id!r}"
+        )
+    return result, bool(row[1])
+
+
+def load_published_result(
+    database_path: Path,
+    published_root: Path,
+    run_id: str,
+) -> dict[str, Any]:
+    result, is_current = _load_published_result(
+        database_path, published_root, run_id
+    )
+    return {
+        "data_state": "available",
+        "is_current": is_current,
+        "result": result,
+    }
 
 
 def _result_input_scope_id(result: dict[str, Any]) -> str:
@@ -1033,8 +1174,18 @@ def compare_results(
                 "base_sample_quantity_sum": (
                     base_item["sample_quantity_sum"] if base_item is not None else None
                 ),
+                "base_sample_quantity_sum_text": (
+                    base_item.get("sample_quantity_sum_text")
+                    if base_item is not None
+                    else None
+                ),
                 "current_sample_quantity_sum": (
                     current_item["sample_quantity_sum"]
+                    if current_item is not None
+                    else None
+                ),
+                "current_sample_quantity_sum_text": (
+                    current_item.get("sample_quantity_sum_text")
                     if current_item is not None
                     else None
                 ),
@@ -1054,6 +1205,18 @@ def compare_results(
                     _location_payload(location)
                     for location in sorted(base_locations - current_locations)
                 ],
+                "quantity_sum_changed": (
+                    base_item is None
+                    or current_item is None
+                    or base_item["sample_quantity_sum"]
+                    != current_item["sample_quantity_sum"]
+                ),
+                "observed_row_count_changed": (
+                    base_item is None
+                    or current_item is None
+                    or base_item["observed_row_count"]
+                    != current_item["observed_row_count"]
+                ),
                 "changed": (
                     (
                         None

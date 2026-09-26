@@ -31,7 +31,12 @@
           <p class="eyebrow">UCI ONLINE RETAIL · OBSERVED SAMPLE</p>
           <h1>상품별 표본 수량 결과</h1>
         </div>
-        <span id="resultBadge" class="status-badge">결과 읽는 중</span>
+        <div class="topbar-actions">
+          <span id="displayedResultState" class="displayed-result-state">표시 중인 결과를 읽기 전입니다.</span>
+          <span id="currentResultState" class="current-result-state" aria-live="polite">현재 공개 결과를 조회하기 전입니다.</span>
+          <button id="refreshCurrentResult" type="button" class="refresh-result-button">최신 결과 다시 읽기</button>
+          <span id="resultBadge" class="status-badge">결과 읽는 중</span>
+        </div>
       </header>
 
       <section id="loadingState" class="message-state" aria-live="polite">
@@ -44,6 +49,13 @@
       </section>
 
       <section id="overviewView" class="view" hidden>
+        <div id="resultContext" class="result-context" hidden aria-live="polite">
+          <div>
+            <strong id="resultContextTitle">지난 실행 읽는 중</strong>
+            <span id="resultContextText"></span>
+          </div>
+          <button id="backToComparison" type="button">비교로 돌아가기</button>
+        </div>
         <div class="context-strip">
           <dl><dt>자료 범위</dt><dd id="scopeText">-</dd></dl>
           <dl><dt>묶은 날짜</dt><dd id="dateBasisText">-</dd></dl>
@@ -57,13 +69,24 @@
                 <h2 id="tableTitle">표본에 나타난 상품</h2>
                 <p>수량 합계와 관찰 행 수는 서로 다른 숫자입니다.</p>
               </div>
-              <label class="filter-label">
-                <span>상품 코드 찾기</span>
-                <input id="productFilter" type="search" placeholder="예: 85123A" autocomplete="off">
-              </label>
+              <div class="table-controls">
+                <label class="filter-label">
+                  <span>표 보기 순서</span>
+                  <select id="productSort">
+                    <option value="default">기본 순서</option>
+                    <option value="quantity-desc">표본 수량 큰순</option>
+                    <option value="quantity-asc">표본 수량 작은순</option>
+                  </select>
+                </label>
+                <label class="filter-label">
+                  <span>상품 코드 찾기</span>
+                  <input id="productFilter" type="search" placeholder="예: 85123A" autocomplete="off">
+                </label>
+              </div>
             </div>
+            <p id="productSortNotice" class="sort-notice" hidden></p>
             <div class="table-wrap">
-              <table>
+              <table id="productTable">
                 <thead>
                   <tr>
                     <th scope="col">원문 날짜</th>
@@ -143,16 +166,24 @@
               <button id="compareButton" type="button">변화 확인</button>
             </div>
           </div>
-          <p id="comparisonState" class="comparison-state">비교할 완료 결과를 읽는 중입니다.</p>
+          <div id="comparisonState" class="comparison-state">비교할 완료 결과를 읽는 중입니다.</div>
+          <section id="comparisonRowTrace" class="comparison-row-trace" hidden aria-live="polite">
+            <div class="comparison-row-trace-head">
+              <strong id="comparisonRowTraceTitle">선택한 원래 거래</strong>
+              <span id="comparisonRowTraceIdentity"></span>
+            </div>
+            <p id="comparisonRowTraceState"></p>
+            <div id="comparisonRowTraceResults" class="comparison-row-trace-results"></div>
+          </section>
           <div id="comparisonTable" class="table-wrap" hidden>
             <table>
               <thead>
                 <tr>
                   <th>원문 날짜</th>
                   <th>상품 코드</th>
-                  <th class="number">이전 수량 / 행</th>
-                  <th class="number">현재 수량 / 행</th>
-                  <th>포함 행 변화</th>
+                  <th class="number">이전 수량 합계 / 관찰 행</th>
+                  <th class="number">현재 수량 합계 / 관찰 행</th>
+                  <th>변화와 확인할 근거</th>
                 </tr>
               </thead>
               <tbody id="comparisonRows"></tbody>

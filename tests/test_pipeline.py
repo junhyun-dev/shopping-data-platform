@@ -15,13 +15,18 @@ import duckdb
 import pytest
 from openpyxl import Workbook, load_workbook
 
+import shopping_data.pipeline as pipeline_module
+from shopping_data.config import CONTRIBUTIONS_SQL
 from shopping_data.pipeline import (
     PROCESS_CHECKPOINTS,
     PipelineBusy,
     PipelineFailure,
+    ResultNotFound,
+    ResultReadError,
     compare_published_results,
     compare_results,
     load_current_result,
+    load_published_result,
     list_published_results,
     load_run_history,
     run_pipeline,
@@ -61,7 +66,15 @@ ROWS = {
     14: [True, "UNSUPPORTED", "UNSUPPORTED INVOICE TYPE", 1, datetime(2010, 12, 1, 9, 3), 1.0, "TEST-CUSTOMER", "United Kingdom"],
     15: ["\t", "TAB-BLANK", "TAB-ONLY INVOICE NUMBER", 1, datetime(2010, 12, 1, 9, 4), 1.0, "TEST-CUSTOMER", "United Kingdom"],
     16: ["\tC123\n", "TAB-C", "C PREFIX AFTER TAB", 1, datetime(2010, 12, 1, 9, 5), 1.0, "TEST-CUSTOMER", "United Kingdom"],
+    17: [536400, "MIX", "MIX DESCRIPTION A", 5, datetime(2010, 12, 1, 10, 0), 1.0, "TEST-CUSTOMER", "United Kingdom"],
+    18: ["C536401", "MIX", "MIX DESCRIPTION B", -5, datetime(2010, 12, 1, 10, 1), 1.0, "TEST-CUSTOMER", "United Kingdom"],
+    19: [None, "MIX", "MIX DESCRIPTION C", 2, datetime(2010, 12, 1, 10, 2), 1.0, "TEST-CUSTOMER", "United Kingdom"],
+    20: ["C536402", "MIX", "MIX DESCRIPTION D", -2, datetime(2010, 12, 1, 10, 3), 1.0, "TEST-CUSTOMER", "United Kingdom"],
+    21: [536403, "BIG", "EXACT INTEGER TEXT", "9007199254740993", datetime(2010, 12, 1, 10, 4), 1.0, "TEST-CUSTOMER", "United Kingdom"],
     143: ["C536379", "D", "Discount", -1, datetime(2010, 12, 1, 9, 41), 27.5, "TEST-CUSTOMER", "United Kingdom"],
+    156: ["C536383", "35004C", "SET OF 3 COLOURED  FLYING DUCKS", -1, datetime(2010, 12, 1, 9, 49), 4.65, "TEST-CUSTOMER", "United Kingdom"],
+    202: [536389, "35004C", "SET OF 3 COLOURED  FLYING DUCKS", 6, datetime(2010, 12, 1, 10, 3), 4.65, "TEST-CUSTOMER", "United Kingdom"],
+    299: [536397, "35004C", "SET OF 3 COLOURED  FLYING DUCKS", 48, datetime(2010, 12, 1, 10, 51), 4.65, "TEST-CUSTOMER", "United Kingdom"],
 }
 
 
@@ -168,6 +181,110 @@ def kill_owned_worker(process: subprocess.Popen[str]) -> None:
 
 def product(result: dict, stock_code: str) -> dict:
     return next(item for item in result["products"] if item["stock_code"] == stock_code)
+
+
+def marker_breakdown(product_result: dict) -> dict[str, dict]:
+    return {
+        item["source_cancellation_marker"]: item
+        for item in product_result["source_cancellation_marker_breakdown"]["groups"]
+    }
+
+
+class RecordingConnection:
+    def __init__(self, connection: duckdb.DuckDBPyConnection) -> None:
+        self.connection = connection
+        self.executions: list[tuple[str, object]] = []
+
+    def execute(self, query: str, parameters: object = None):
+        self.executions.append((query, parameters))
+        if parameters is None:
+            return self.connection.execute(query)
+        return self.connection.execute(query, parameters)
+
+
+def test_result_build_reads_all_run_contributions_once_without_cross_run_rows(
+    tmp_path: Path,
+) -> None:
+    workbook, manifest, database, published = local_paths(
+        tmp_path, [2, 3, 10, 143]
+    )
+    first = run_pipeline(
+        source_path=workbook,
+        manifest_path=manifest,
+        database_path=database,
+        published_root=published,
+        selected_rows=[2, 3],
+    )
+    run_pipeline(
+        source_path=workbook,
+        manifest_path=manifest,
+        database_path=database,
+        published_root=published,
+        selected_rows=[10, 143],
+    )
+
+    connection = duckdb.connect(str(database), read_only=True)
+    recording = RecordingConnection(connection)
+    try:
+        rebuilt = pipeline_module._build_result(
+            recording,
+            run_id=first["run"]["run_id"],
+            source_file_id=first["source"]["source_file_id"],
+            source_sha256=first["source"]["sha256"],
+            source_path=workbook,
+            manifest=json.loads(manifest.read_text(encoding="utf-8")),
+            selected_rows=first["source"]["selected_excel_rows"],
+            input_scope_id=first["source"]["input_scope_id"],
+            aggregation_rule_id=first["aggregation_rule_id"],
+            transformation_rule_id=first["transformation_rule_id"],
+            completed_at=datetime.fromisoformat(first["run"]["completed_at"]),
+        )
+    finally:
+        connection.close()
+
+    contribution_sql = CONTRIBUTIONS_SQL.read_text(encoding="utf-8").strip()
+    contribution_query_count = sum(
+        query.strip() == contribution_sql for query, _ in recording.executions
+    )
+    assert contribution_query_count == 1
+    assert rebuilt == first
+
+
+def test_bulk_contribution_reconciliation_failure_keeps_last_good_result(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workbook, manifest, database, published = local_paths(tmp_path, [2, 3])
+    last_good = run_pipeline(
+        source_path=workbook,
+        manifest_path=manifest,
+        database_path=database,
+        published_root=published,
+    )
+    broken_sql = tmp_path / "broken_contribution_rows.sql"
+    broken_sql.write_text(
+        CONTRIBUTIONS_SQL.read_text(encoding="utf-8").replace(
+            "WHERE i.run_id = ?",
+            "WHERE i.run_id = ? AND t.stock_code <> '71053'",
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(pipeline_module, "CONTRIBUTIONS_SQL", broken_sql)
+
+    with pytest.raises(
+        PipelineFailure,
+        match="source cancellation marker breakdown does not reconcile",
+    ):
+        run_pipeline(
+            source_path=workbook,
+            manifest_path=manifest,
+            database_path=database,
+            published_root=published,
+        )
+
+    assert load_current_result(database, published) == last_good
+    history = load_run_history(database)
+    assert history[0]["status"] == "failed"
+    assert history[1]["run_id"] == last_good["run"]["run_id"]
 
 
 def test_repeated_input_is_idempotent_and_products_do_not_mix(tmp_path: Path) -> None:
@@ -379,6 +496,159 @@ def test_source_cancellation_marker_is_derived_without_changing_invoice_text(
     ]
 
 
+def test_source_marker_breakdown_reconciles_without_changing_product_grain(
+    tmp_path: Path,
+) -> None:
+    selected = [17, 18, 19, 20]
+    workbook, manifest, database, published = local_paths(tmp_path, selected)
+    result = run_pipeline(
+        source_path=workbook,
+        manifest_path=manifest,
+        database_path=database,
+        published_root=published,
+    )
+
+    observed_product = product(result, "MIX")
+    assert observed_product["sample_quantity_sum"] == 0
+    assert observed_product["observed_row_count"] == 4
+    observed = marker_breakdown(observed_product)
+    assert observed == {
+        "true": {
+            "source_cancellation_marker": "true",
+            "signed_quantity_sum_text": "-7",
+            "observed_row_count": 2,
+            "contributing_excel_rows": [18, 20],
+        },
+        "false": {
+            "source_cancellation_marker": "false",
+            "signed_quantity_sum_text": "5",
+            "observed_row_count": 1,
+            "contributing_excel_rows": [17],
+        },
+        "unknown": {
+            "source_cancellation_marker": "unknown",
+            "signed_quantity_sum_text": "2",
+            "observed_row_count": 1,
+            "contributing_excel_rows": [19],
+        },
+    }
+    assert {
+        row["description"] for row in observed_product["contributing_rows"]
+    } == {
+        "MIX DESCRIPTION A",
+        "MIX DESCRIPTION B",
+        "MIX DESCRIPTION C",
+        "MIX DESCRIPTION D",
+    }
+    assert result["source_cancellation_marker_breakdown_rule_id"].startswith(
+        "sha256:"
+    )
+    assert (
+        "Description remains on the contributing source rows"
+        in result["applied_source_cancellation_marker_breakdown_sql"]
+    )
+
+
+def test_source_marker_breakdown_keeps_large_sql_sum_as_exact_text(
+    tmp_path: Path,
+) -> None:
+    workbook, manifest, database, published = local_paths(tmp_path, [21])
+    result = run_pipeline(
+        source_path=workbook,
+        manifest_path=manifest,
+        database_path=database,
+        published_root=published,
+    )
+
+    observed_product = product(result, "BIG")
+    assert observed_product["sample_quantity_sum"] == 9007199254740993
+    assert observed_product["sample_quantity_sum_text"] == "9007199254740993"
+    assert observed_product["contributing_rows"][0][
+        "quantity_integer_text"
+    ] == "9007199254740993"
+    assert marker_breakdown(observed_product)["false"][
+        "signed_quantity_sum_text"
+    ] == "9007199254740993"
+
+    repeated = run_pipeline(
+        source_path=workbook,
+        manifest_path=manifest,
+        database_path=database,
+        published_root=published,
+    )
+    comparison = compare_published_results(
+        database,
+        published,
+        base_run_id=result["run"]["run_id"],
+        current_run_id=repeated["run"]["run_id"],
+    )
+    observed_comparison = comparison["groups"][0]
+    assert observed_comparison["base_sample_quantity_sum_text"] == "9007199254740993"
+    assert observed_comparison["current_sample_quantity_sum_text"] == "9007199254740993"
+    assert observed_comparison["quantity_sum_changed"] is False
+
+
+def test_actual_uci_marker_breakdown_explains_five_without_calling_it_sales(
+    tmp_path: Path,
+) -> None:
+    source = PROJECT_ROOT / "data" / "source" / "Online Retail.xlsx"
+    manifest = PROJECT_ROOT / "config" / "source.json"
+    if not source.exists():
+        pytest.skip("local preserved UCI workbook is not available")
+    source_sha_before = hashlib.sha256(source.read_bytes()).hexdigest()
+
+    result = run_pipeline(
+        source_path=source,
+        manifest_path=manifest,
+        database_path=tmp_path / "actual-marker-breakdown.duckdb",
+        published_root=tmp_path / "published",
+        selected_rows=[143, 156, 202],
+    )
+
+    ducks = product(result, "35004C")
+    assert ducks["sample_quantity_sum"] == 5
+    assert ducks["observed_row_count"] == 2
+    assert marker_breakdown(ducks) == {
+        "true": {
+            "source_cancellation_marker": "true",
+            "signed_quantity_sum_text": "-1",
+            "observed_row_count": 1,
+            "contributing_excel_rows": [156],
+        },
+        "false": {
+            "source_cancellation_marker": "false",
+            "signed_quantity_sum_text": "6",
+            "observed_row_count": 1,
+            "contributing_excel_rows": [202],
+        },
+    }
+    assert "unknown" not in marker_breakdown(ducks)
+    assert [
+        row["source_row_number"] for row in ducks["contributing_rows"]
+    ] == [156, 202]
+    assert [
+        row["quantity_integer_text"] for row in ducks["contributing_rows"]
+    ] == ["-1", "6"]
+    discount = product(result, "D")
+    assert discount["sample_quantity_sum"] == -1
+    assert marker_breakdown(discount)["true"]["contributing_excel_rows"] == [143]
+
+    workbook = load_workbook(source, read_only=True, data_only=True)
+    try:
+        sheet = workbook["Online Retail"]
+        assert sum(int(sheet.cell(row=row_number, column=4).value) for row_number in [156, 202]) == 5
+        assert {
+            str(sheet.cell(row=row_number, column=2).value)
+            for row_number in [156, 202]
+        } == {"35004C"}
+        assert str(sheet.cell(row=156, column=1).value).startswith("C")
+        assert not str(sheet.cell(row=202, column=1).value).startswith("C")
+        assert sheet.cell(row=156, column=3).value == sheet.cell(row=202, column=3).value
+    finally:
+        workbook.close()
+    assert hashlib.sha256(source.read_bytes()).hexdigest() == source_sha_before
+
+
 def test_actual_uci_sample_matches_independent_workbook_calculation(tmp_path: Path) -> None:
     project_root = Path(__file__).resolve().parents[1]
     source = project_root / "data" / "source" / "Online Retail.xlsx"
@@ -492,6 +762,21 @@ def test_run_scope_is_separate_from_preserved_source_rows_and_can_be_compared(
             "source_row_number": 2,
         }
     ]
+    unchanged = next(
+        item for item in comparison["groups"] if item["stock_code"] == "71053"
+    )
+    assert unchanged["base_sample_quantity_sum"] == 6
+    assert unchanged["current_sample_quantity_sum"] == 6
+    assert unchanged["changed"] is False
+
+    same_scope_comparison = compare_published_results(
+        database,
+        published,
+        base_run_id=first["run"]["run_id"],
+        current_run_id=third["run"]["run_id"],
+    )
+    assert same_scope_comparison["change_basis"]["code"] == "same_input_scope_and_rule"
+    assert all(item["changed"] is False for item in same_scope_comparison["groups"])
 
     results = list_published_results(database, published)
     assert [item["run_id"] for item in results] == [
@@ -500,6 +785,204 @@ def test_run_scope_is_separate_from_preserved_source_rows_and_can_be_compared(
         first["run"]["run_id"],
     ]
     assert results[0]["is_current"] is True
+
+
+def test_comparison_keeps_equal_value_and_changed_source_locations_separate(
+    tmp_path: Path,
+) -> None:
+    workbook, manifest, database, published = local_paths(tmp_path, [2, 10])
+    first = run_pipeline(
+        source_path=workbook,
+        manifest_path=manifest,
+        database_path=database,
+        published_root=published,
+        selected_rows=[2],
+    )
+    second = run_pipeline(
+        source_path=workbook,
+        manifest_path=manifest,
+        database_path=database,
+        published_root=published,
+        selected_rows=[10],
+    )
+
+    comparison = compare_published_results(
+        database,
+        published,
+        base_run_id=first["run"]["run_id"],
+        current_run_id=second["run"]["run_id"],
+    )
+    group = comparison["groups"][0]
+
+    assert group["base_sample_quantity_sum"] == 6
+    assert group["current_sample_quantity_sum"] == 6
+    assert group["base_observed_row_count"] == 1
+    assert group["current_observed_row_count"] == 1
+    assert [row["source_row_number"] for row in group["removed_source_rows"]] == [2]
+    assert [row["source_row_number"] for row in group["added_source_rows"]] == [10]
+    assert group["changed"] is True
+
+
+def test_saved_results_open_their_own_rows_sql_and_exact_comparison_values(
+    tmp_path: Path,
+) -> None:
+    workbook, manifest, database, published = local_paths(
+        tmp_path, [143, 156, 202, 299]
+    )
+    first = run_pipeline(
+        source_path=workbook,
+        manifest_path=manifest,
+        database_path=database,
+        published_root=published,
+        selected_rows=[143, 156, 202],
+    )
+    second = run_pipeline(
+        source_path=workbook,
+        manifest_path=manifest,
+        database_path=database,
+        published_root=published,
+        selected_rows=[143, 156, 202, 299],
+    )
+    database_before_reads = hashlib.sha256(database.read_bytes()).hexdigest()
+
+    opened_first = load_published_result(
+        database, published, first["run"]["run_id"]
+    )
+    opened_second = load_published_result(
+        database, published, second["run"]["run_id"]
+    )
+
+    assert opened_first["is_current"] is False
+    assert opened_second["is_current"] is True
+    assert opened_first["result"]["run"]["run_id"] == first["run"]["run_id"]
+    assert opened_second["result"]["run"]["run_id"] == second["run"]["run_id"]
+    first_ducks = product(opened_first["result"], "35004C")
+    second_ducks = product(opened_second["result"], "35004C")
+    assert first_ducks["sample_quantity_sum_text"] == "5"
+    assert [
+        row["source_row_number"] for row in first_ducks["contributing_rows"]
+    ] == [156, 202]
+    assert second_ducks["sample_quantity_sum_text"] == "53"
+    assert [
+        (row["source_row_number"], row["quantity_integer_text"])
+        for row in second_ducks["contributing_rows"]
+    ] == [(156, "-1"), (202, "6"), (299, "48")]
+    assert opened_first["result"]["applied_sql"] == first["applied_sql"]
+    assert opened_second["result"]["applied_sql"] == second["applied_sql"]
+
+    comparison = compare_published_results(
+        database,
+        published,
+        base_run_id=first["run"]["run_id"],
+        current_run_id=second["run"]["run_id"],
+    )
+    ducks_change = next(
+        item for item in comparison["groups"] if item["stock_code"] == "35004C"
+    )
+    assert ducks_change["base_sample_quantity_sum_text"] == "5"
+    assert ducks_change["current_sample_quantity_sum_text"] == "53"
+    assert ducks_change["quantity_sum_changed"] is True
+    assert ducks_change["observed_row_count_changed"] is True
+    assert [
+        location["source_row_number"]
+        for location in ducks_change["added_source_rows"]
+    ] == [299]
+    assert load_current_result(database, published)["run"]["run_id"] == second["run"]["run_id"]
+    assert hashlib.sha256(database.read_bytes()).hexdigest() == database_before_reads
+
+
+def test_saved_result_read_fails_closed_for_unpublished_states_and_paths(
+    tmp_path: Path,
+) -> None:
+    workbook, manifest, database, published = local_paths(tmp_path, [2])
+    current = run_pipeline(
+        source_path=workbook,
+        manifest_path=manifest,
+        database_path=database,
+        published_root=published,
+    )
+    source_file_id = current["source"]["source_file_id"]
+    current_artifact = published / f"{current['run']['run_id']}.json"
+    orphan_id = "orphan-not-registered"
+    (published / f"{orphan_id}.json").write_bytes(current_artifact.read_bytes())
+
+    connection = duckdb.connect(str(database))
+    try:
+        for run_id, status in (("failed-run", "failed"), ("running-run", "running")):
+            connection.execute(
+                """
+                INSERT INTO pipeline_runs
+                    (run_id, source_file_id, input_path, status, started_at)
+                VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+                """,
+                [run_id, source_file_id, str(workbook), status],
+            )
+            connection.execute(
+                """
+                INSERT INTO published_results
+                    (run_id, artifact_path, published_at, is_current)
+                VALUES (?, ?, CURRENT_TIMESTAMP, FALSE)
+                """,
+                [run_id, str(current_artifact)],
+            )
+    finally:
+        connection.close()
+
+    for run_id in ("missing-run", orphan_id, "failed-run", "running-run"):
+        with pytest.raises(ResultNotFound, match="successful published result not found"):
+            load_published_result(database, published, run_id)
+
+    external = tmp_path / "outside.json"
+    external.write_bytes(current_artifact.read_bytes())
+    connection = duckdb.connect(str(database))
+    try:
+        connection.execute(
+            "UPDATE published_results SET artifact_path = ? WHERE run_id = ?",
+            [str(external), current["run"]["run_id"]],
+        )
+    finally:
+        connection.close()
+    with pytest.raises(ResultReadError, match="outside the result directory"):
+        load_published_result(database, published, current["run"]["run_id"])
+
+
+@pytest.mark.parametrize("artifact_state", ["missing", "corrupt", "wrong_run_id"])
+def test_saved_result_read_does_not_substitute_current_for_bad_artifact(
+    tmp_path: Path, artifact_state: str
+) -> None:
+    case_root = tmp_path / artifact_state
+    case_root.mkdir()
+    workbook, manifest, database, published = local_paths(case_root, [2, 3])
+    first = run_pipeline(
+        source_path=workbook,
+        manifest_path=manifest,
+        database_path=database,
+        published_root=published,
+        selected_rows=[2],
+    )
+    second = run_pipeline(
+        source_path=workbook,
+        manifest_path=manifest,
+        database_path=database,
+        published_root=published,
+        selected_rows=[2, 3],
+    )
+    first_artifact = published / f"{first['run']['run_id']}.json"
+    if artifact_state == "missing":
+        first_artifact.unlink()
+        expected = "published result could not be read"
+    elif artifact_state == "corrupt":
+        first_artifact.write_text("{not-json", encoding="utf-8")
+        expected = "published result could not be read"
+    else:
+        mismatched = deepcopy(first)
+        mismatched["run"]["run_id"] = "different-run"
+        first_artifact.write_text(json.dumps(mismatched), encoding="utf-8")
+        expected = "does not match the requested run"
+
+    with pytest.raises(ResultReadError, match=expected):
+        load_published_result(database, published, first["run"]["run_id"])
+    assert load_current_result(database, published)["run"]["run_id"] == second["run"]["run_id"]
 
 
 def test_failed_new_scope_does_not_replace_or_become_comparable_result(
@@ -550,6 +1033,22 @@ def test_file_or_sql_change_is_not_labeled_as_selection_only(tmp_path: Path) -> 
     assert comparison["change_basis"]["code"] == "source_sheet_or_rule_changed"
     assert comparison["change_basis"]["source_file_changed"] is True
     assert comparison["change_basis"]["aggregation_rule_changed"] is True
+
+    rule_only_changed = deepcopy(base)
+    rule_only_changed["run"]["run_id"] = "different-rule"
+    rule_only_changed["aggregation_rule_id"] = "sha256:different-rule"
+    rule_only_comparison = compare_results(base, rule_only_changed)
+    assert rule_only_comparison["change_basis"]["aggregation_rule_changed"] is True
+    assert rule_only_comparison["groups"][0]["changed"] is False
+
+    value_only_changed = deepcopy(base)
+    value_only_changed["run"]["run_id"] = "different-value"
+    value_only_changed["products"][0]["sample_quantity_sum"] = 7
+    value_only_comparison = compare_results(base, value_only_changed)
+    assert value_only_comparison["change_basis"]["code"] == "same_input_scope_and_rule"
+    assert value_only_comparison["groups"][0]["changed"] is True
+    assert value_only_comparison["groups"][0]["added_source_rows"] == []
+    assert value_only_comparison["groups"][0]["removed_source_rows"] == []
 
     transformation_changed = deepcopy(base)
     transformation_changed["run"]["run_id"] = "different-transformation"

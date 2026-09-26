@@ -13,6 +13,7 @@ from .pipeline import (
     compare_published_results,
     list_published_results,
     load_current_result,
+    load_published_result,
     load_run_history,
 )
 
@@ -51,8 +52,35 @@ def serve(
             parsed = urlsplit(self.path)
             path = parsed.path
             if path == "/api/result":
+                query = parse_qs(parsed.query, keep_blank_values=True)
+                if set(query) - {"run_id"} or len(query.get("run_id", [])) > 1:
+                    self._json(
+                        HTTPStatus.BAD_REQUEST,
+                        {
+                            "data_state": "invalid_request",
+                            "message": "only one run_id may be requested",
+                        },
+                    )
+                    return
+                requested_run_ids = query.get("run_id")
                 try:
-                    payload = load_current_result(database_path, published_root)
+                    if requested_run_ids is None:
+                        payload = load_current_result(database_path, published_root)
+                    elif not requested_run_ids[0]:
+                        self._json(
+                            HTTPStatus.BAD_REQUEST,
+                            {
+                                "data_state": "invalid_request",
+                                "message": "run_id must not be empty",
+                            },
+                        )
+                        return
+                    else:
+                        payload = load_published_result(
+                            database_path,
+                            published_root,
+                            requested_run_ids[0],
+                        )
                 except ResultNotFound as exc:
                     self._json(
                         HTTPStatus.NOT_FOUND,

@@ -1,8 +1,20 @@
 const state = {
   result: null,
+  currentResult: null,
   selected: null,
+  selectedMarker: null,
   currentView: "overview",
   publishedResults: [],
+  resultContext: null,
+  resultRequestVersion: 0,
+  runsRequestVersion: 0,
+  comparisonRequestVersion: 0,
+  comparisonRowRequestVersion: 0,
+  comparisonRowFocus: null,
+  comparisonStableState: "비교할 완료 결과를 읽는 중입니다.",
+  comparisonStableRowChanges: null,
+  comparisonSelectionNotice: "",
+  currentLookupStableState: "현재 공개 결과를 조회하기 전입니다.",
 };
 
 const byId = (id) => document.getElementById(id);
@@ -14,6 +26,239 @@ function shortId(value, size = 10) {
 
 function setText(id, value) {
   byId(id).textContent = value;
+}
+
+function selectedRowRanges(rows) {
+  const values = [...new Set(rows.map((row) => Number(row)))].sort((left, right) => left - right);
+  if (!values.length || values.some((row) => !Number.isInteger(row))) return [];
+
+  const ranges = [];
+  let start = values[0];
+  let end = start;
+  values.slice(1).forEach((row) => {
+    if (row === end + 1) {
+      end = row;
+      return;
+    }
+    ranges.push([start, end]);
+    start = row;
+    end = row;
+  });
+  ranges.push([start, end]);
+  return ranges;
+}
+
+function selectedRowsSummary(rows) {
+  const ranges = selectedRowRanges(rows);
+  if (!ranges.length) return rows.length ? `Excel ${rows.join(", ")}행` : "Excel 선택 행 없음";
+
+  const visibleRanges = ranges.slice(0, 4).map(([start, end]) =>
+    start === end ? String(start) : `${start}~${end}`
+  );
+  const omittedRangeCount = ranges.length - visibleRanges.length;
+  const omitted = omittedRangeCount ? ` · 외 ${omittedRangeCount}개 구간` : "";
+  return `Excel ${visibleRanges.join(", ")}행${omitted} · ${rows.length.toLocaleString("ko-KR")}행 선택`;
+}
+
+function shouldDiscloseSelectedRows(rows) {
+  return rows.length > 12 || selectedRowRanges(rows).length > 4;
+}
+
+function renderSelectedRowsScope(sheet, rows) {
+  const container = byId("scopeText");
+  container.replaceChildren();
+  const summary = `${sheet} · ${selectedRowsSummary(rows)}`;
+  if (!shouldDiscloseSelectedRows(rows)) {
+    container.textContent = summary;
+    return;
+  }
+
+  const details = document.createElement("details");
+  details.className = "scope-disclosure";
+  const heading = document.createElement("summary");
+  heading.textContent = `${summary} · 전체 행 펼치기`;
+  const fullRows = document.createElement("span");
+  fullRows.className = "scope-full-rows";
+  fullRows.textContent = `전체 선택 행: ${rows.join(", ")}`;
+  details.append(heading, fullRows);
+  container.appendChild(details);
+}
+
+function changedRowsSummary(label, rows) {
+  if (!rows.length) return `${label} 행 없음`;
+  const summary = selectedRowsSummary(rows).replace(/행 선택$/, "행");
+  return `${label} ${summary}`;
+}
+
+function renderComparisonState(value, rowChanges = null) {
+  const container = byId("comparisonState");
+  container.replaceChildren();
+  const message = document.createElement("p");
+  message.className = "comparison-state-copy";
+  message.textContent = value;
+  container.appendChild(message);
+
+  if (!rowChanges) return;
+  const disclosures = document.createElement("div");
+  disclosures.className = "comparison-scope-disclosures";
+  [
+    ["추가", rowChanges.added],
+    ["빠진", rowChanges.removed],
+  ].forEach(([label, rows]) => {
+    if (!shouldDiscloseSelectedRows(rows)) return;
+    const details = document.createElement("details");
+    details.className = "scope-disclosure comparison-scope-disclosure";
+    const heading = document.createElement("summary");
+    heading.textContent = `${label} ${rows.length.toLocaleString("ko-KR")}행 전체 펼치기`;
+    const fullRows = document.createElement("span");
+    fullRows.className = "scope-full-rows";
+    fullRows.textContent = `${label} 전체 행: Excel ${rows.join(", ")}`;
+    details.append(heading, fullRows);
+    disclosures.appendChild(details);
+  });
+  if (disclosures.childElementCount) container.appendChild(disclosures);
+}
+
+function setStableComparisonState(value, rowChanges = null) {
+  state.comparisonStableState = value;
+  state.comparisonStableRowChanges = rowChanges;
+  renderComparisonState(value, rowChanges);
+}
+
+function setCurrentLookupState(value) {
+  state.currentLookupStableState = value;
+  setText("currentResultState", value);
+}
+
+function finishCurrentResultRequest() {
+  const button = byId("refreshCurrentResult");
+  button.disabled = false;
+  button.textContent = "최신 결과 다시 읽기";
+  setText("currentResultState", state.currentLookupStableState);
+}
+
+function invalidatePendingResultRequest() {
+  state.resultRequestVersion += 1;
+  finishCurrentResultRequest();
+}
+
+function leavePendingResultContext() {
+  invalidatePendingResultRequest();
+  state.runsRequestVersion += 1;
+  state.comparisonRowRequestVersion += 1;
+  renderComparisonState(
+    state.comparisonStableState,
+    state.comparisonStableRowChanges
+  );
+}
+
+function changeComparisonSelection() {
+  invalidatePendingResultRequest();
+  state.comparisonRequestVersion += 1;
+  state.comparisonRowRequestVersion += 1;
+  state.comparisonSelectionNotice = "";
+  setStableComparisonState(
+    "비교 조건이 바뀌었습니다. 변화 확인을 눌러 두 결과를 다시 읽으세요."
+  );
+  if (state.comparisonRowFocus) {
+    showComparisonRowTrace(
+      state.comparisonRowFocus,
+      "두 결과 선택이 바뀌었습니다. 변화 확인을 누르면 이 행의 기여 여부도 새 선택으로 다시 읽습니다."
+    );
+  }
+  byId("comparisonTable").hidden = true;
+}
+
+function sourceLocationText(focus) {
+  return `${focus.sheet} Excel ${focus.sourceRowNumber}행 · 파일 ${focus.sourceFileId}`;
+}
+
+function showComparisonRowTrace(focus, message) {
+  const panel = byId("comparisonRowTrace");
+  panel.hidden = false;
+  setText("comparisonRowTraceTitle", `${focus.stockCode} · ${focus.observedDate}`);
+  setText("comparisonRowTraceIdentity", sourceLocationText(focus));
+  setText("comparisonRowTraceState", message);
+  byId("comparisonRowTraceResults").replaceChildren();
+}
+
+function hideComparisonRowTrace() {
+  byId("comparisonRowTrace").hidden = true;
+  byId("comparisonRowTraceResults").replaceChildren();
+}
+
+function renderDisplayedResultState() {
+  const result = state.result;
+  if (!result) {
+    setText("displayedResultState", "표시 중인 결과가 없습니다.");
+    return;
+  }
+
+  let description = "저장 결과";
+  if (state.resultContext) {
+    const side = state.resultContext.side === "base" ? "비교의 이전 저장 결과" : "비교의 이후 저장 결과";
+    const current = state.resultContext.isCurrent ? " · 조회 당시 현재 공개 결과" : "";
+    description = `${side}${current}`;
+  } else if (state.currentResult?.run?.run_id === result.run.run_id) {
+    description = "마지막으로 읽은 현재 공개 결과";
+  }
+  setText(
+    "displayedResultState",
+    `표시 중 run ${shortId(result.run.run_id)} · ${description}`
+  );
+}
+
+function renderResultContext() {
+  const panel = byId("resultContext");
+  const context = state.resultContext;
+  panel.hidden = !context;
+  if (!context) return;
+
+  const side = context.side === "base" ? "비교의 이전 결과" : "비교의 이후 결과";
+  const current = context.isCurrent ? " · 현재 공개 결과" : "";
+  setText(
+    "resultContextTitle",
+    context.isCurrent ? `${side}${current}` : `지난 실행 읽는 중 · ${side}`
+  );
+  setText(
+    "resultContextText",
+    `run ${state.result.run.run_id} · 완료 ${state.result.run.completed_at} · ${state.result.source.sheet} · ${selectedRowsSummary(state.result.source.selected_excel_rows)}`
+  );
+}
+
+function clearProductDetail(message = "왼쪽 표의 상품을 누르면 어떤 Excel 행이 숫자에 들어갔는지 확인할 수 있습니다.") {
+  state.selected = null;
+  state.selectedMarker = null;
+  setText("detailTitle", "상품을 선택하세요");
+  setText("detailLocation", "-");
+  byId("detailMetrics").hidden = true;
+  setText("detailHelp", message);
+  byId("detailHelp").hidden = false;
+  byId("detailBody").hidden = true;
+}
+
+function showMissingComparedProduct(focus) {
+  state.selected = null;
+  state.selectedMarker = null;
+  renderProductRows();
+  setText("detailTitle", focus.stockCode);
+  setText("detailLocation", focus.observedDate);
+  byId("detailMetrics").hidden = true;
+  setText(
+    "detailHelp",
+    "이 저장 결과에는 이 상품·날짜 결과가 없습니다. 0으로 계산한 것이 아니며 다른 상품을 대신 보여 주지 않습니다."
+  );
+  byId("detailHelp").hidden = false;
+  byId("detailBody").hidden = false;
+  const rowsPanel = byId("rowsTab");
+  rowsPanel.replaceChildren();
+  const missing = document.createElement("p");
+  missing.className = "marker-breakdown-unavailable";
+  missing.textContent = "이 실행에는 이 상품·날짜에 기여한 거래가 없습니다. 관찰 행 0을 만든 것이 아닙니다.";
+  rowsPanel.appendChild(missing);
+  renderSourceDetails(
+    `실행 전체 범위: ${selectedRowsSummary(state.result.source.selected_excel_rows)}`
+  );
 }
 
 function showError(payload, status) {
@@ -32,12 +277,18 @@ function showError(payload, status) {
 
 function renderOverview() {
   const result = state.result;
-  setText("scopeText", `${result.source.sheet} · Excel ${result.source.selected_excel_rows.join("·")}행`);
+  renderResultContext();
+  renderDisplayedResultState();
+  renderSelectedRowsScope(result.source.sheet, result.source.selected_excel_rows);
   setText("dateBasisText", "원문 InvoiceDate의 날짜 부분");
   setText("runText", `${shortId(result.run.run_id)} · ${result.run.completed_at}`);
-  const sqlEvidence = result.applied_transformation_sql
-    ? `-- 원천 행 변환과 표시 규칙\n${result.applied_transformation_sql}\n\n-- 상품·날짜별 표본 집계\n${result.applied_sql}`
-    : `-- 과거 결과: 원천 행 변환 SQL 식별은 기록되지 않음\n\n${result.applied_sql}`;
+  const transformationEvidence = result.applied_transformation_sql
+    ? `-- 원천 행 변환과 표시 규칙\n${result.applied_transformation_sql}`
+    : "-- 과거 결과: 원천 행 변환 SQL 식별은 기록되지 않음";
+  const breakdownEvidence = result.applied_source_cancellation_marker_breakdown_sql
+    ? `-- 원천 취소 표시별 구성\n${result.applied_source_cancellation_marker_breakdown_sql}`
+    : "-- 과거 결과: 원천 취소 표시별 구성 SQL은 기록되지 않음";
+  const sqlEvidence = `${transformationEvidence}\n\n-- 상품·날짜별 표본 집계\n${result.applied_sql}\n\n${breakdownEvidence}`;
   setText("sqlText", sqlEvidence);
   renderProductRows();
   renderQuality();
@@ -56,11 +307,111 @@ function cancellationMarkerText(row) {
   return "원천 취소 표시 unknown (InvoiceNo 없음·space/tab/CR/LF만 있음 또는 지원하지 않는 셀 타입)";
 }
 
+function exactIntegerText(value) {
+  const raw = String(value);
+  if (!/^-?\d+$/.test(raw)) return "정밀값 미기록/확인 불가";
+  try {
+    return BigInt(raw).toLocaleString("ko-KR");
+  } catch (_) {
+    return "정밀값 미기록/확인 불가";
+  }
+}
+
+function integerText(exactText, legacyValue) {
+  if (exactText !== undefined && exactText !== null) {
+    return exactIntegerText(exactText);
+  }
+  if (typeof legacyValue === "number" && Number.isSafeInteger(legacyValue)) {
+    return legacyValue.toLocaleString("ko-KR");
+  }
+  return "정밀값 미기록/확인 불가";
+}
+
+function markerLabel(marker) {
+  if (marker === "true") return "표시 있음";
+  if (marker === "false") return "표시 없음";
+  return "미확인";
+}
+
+function productQuantityText(product) {
+  return integerText(product.sample_quantity_sum_text, product.sample_quantity_sum);
+}
+
+function productQuantityWithUnit(product) {
+  const quantity = productQuantityText(product);
+  return quantity === "정밀값 미기록/확인 불가" ? quantity : `${quantity}개`;
+}
+
+function sortableProductQuantity(product) {
+  if (product.sample_quantity_sum_text !== undefined
+      && product.sample_quantity_sum_text !== null) {
+    const raw = String(product.sample_quantity_sum_text);
+    if (!/^-?\d+$/.test(raw)) return null;
+    try {
+      return BigInt(raw);
+    } catch (_) {
+      return null;
+    }
+  }
+  if (typeof product.sample_quantity_sum === "number"
+      && Number.isSafeInteger(product.sample_quantity_sum)) {
+    return BigInt(product.sample_quantity_sum);
+  }
+  return null;
+}
+
+function compareProductIdentity(left, right) {
+  const leftDate = String(left.observed_date);
+  const rightDate = String(right.observed_date);
+  const dateComparison = leftDate === rightDate ? 0 : (leftDate < rightDate ? -1 : 1);
+  if (dateComparison) return dateComparison;
+  const leftCode = String(left.stock_code);
+  const rightCode = String(right.stock_code);
+  return leftCode === rightCode ? 0 : (leftCode < rightCode ? -1 : 1);
+}
+
+function compareProductQuantity(left, right, direction) {
+  const leftQuantity = sortableProductQuantity(left);
+  const rightQuantity = sortableProductQuantity(right);
+  if (leftQuantity === null && rightQuantity !== null) return 1;
+  if (leftQuantity !== null && rightQuantity === null) return -1;
+  if (leftQuantity !== null && rightQuantity !== null && leftQuantity !== rightQuantity) {
+    const comparison = leftQuantity < rightQuantity ? -1 : 1;
+    return direction === "quantity-desc" ? -comparison : comparison;
+  }
+  return compareProductIdentity(left, right);
+}
+
 function renderProductRows() {
   const body = byId("productRows");
   body.replaceChildren();
   const query = byId("productFilter").value.trim().toUpperCase();
-  const products = state.result.products.filter((item) => item.stock_code.toUpperCase().includes(query));
+  const sort = byId("productSort").value;
+  const focus = state.resultContext?.focus;
+  const products = state.result.products.filter((item) => {
+    if (focus) {
+      return item.observed_date === focus.observedDate
+        && item.stock_code === focus.stockCode;
+    }
+    return item.stock_code.toUpperCase().includes(query);
+  });
+  if (sort !== "default") {
+    products.sort((left, right) => compareProductQuantity(left, right, sort));
+  }
+  const unknownQuantityCount = sort === "default"
+    ? 0
+    : products.filter((product) => sortableProductQuantity(product) === null).length;
+  const sortNotice = byId("productSortNotice");
+  sortNotice.hidden = unknownQuantityCount === 0;
+  sortNotice.textContent = unknownQuantityCount
+    ? `정밀 수량을 확인할 수 없는 ${unknownQuantityCount.toLocaleString("ko-KR")}개 결과는 순서를 확정하지 않고, 정확한 값이 있는 결과 뒤에 날짜·상품 코드 순으로 표시합니다.`
+    : "";
+  setText(
+    "filterEmpty",
+    focus
+      ? `이 저장 결과에는 ${focus.observedDate} · ${focus.stockCode} 상품 결과가 없습니다. 0으로 계산한 것이 아닙니다.`
+      : "이 표본에 해당 상품이 없습니다. 0으로 계산한 것이 아닙니다."
+  );
   byId("filterEmpty").hidden = products.length > 0;
 
   products.forEach((product) => {
@@ -69,7 +420,7 @@ function renderProductRows() {
     const values = [
       product.observed_date,
       product.stock_code,
-      product.sample_quantity_sum.toLocaleString("ko-KR"),
+      productQuantityText(product),
       product.observed_row_count.toLocaleString("ko-KR"),
     ];
     values.forEach((value, index) => {
@@ -92,10 +443,11 @@ function renderProductRows() {
 
 function selectProduct(product) {
   state.selected = product;
+  state.selectedMarker = null;
   renderProductRows();
   setText("detailTitle", product.stock_code);
   setText("detailLocation", product.observed_date);
-  setText("detailQuantity", `${product.sample_quantity_sum.toLocaleString("ko-KR")}개`);
+  setText("detailQuantity", productQuantityWithUnit(product));
   setText("detailRowCount", `${product.observed_row_count.toLocaleString("ko-KR")}행`);
   byId("detailMetrics").hidden = false;
   byId("detailHelp").hidden = true;
@@ -107,24 +459,136 @@ function selectProduct(product) {
 function renderContributions(product) {
   const panel = byId("rowsTab");
   panel.replaceChildren();
-  product.contributing_rows.forEach((row) => {
+  const breakdown = product.source_cancellation_marker_breakdown;
+  const groups = breakdown?.data_state === "available" && Array.isArray(breakdown.groups)
+    ? breakdown.groups
+    : null;
+
+  if (!groups) {
+    const unavailable = document.createElement("p");
+    unavailable.className = "marker-breakdown-unavailable";
+    unavailable.textContent = "이 과거 결과에는 원천 취소 표시별 구성이 없습니다. 미계산/미확인으로 두고, 아래 원래 거래는 그대로 보여 줍니다.";
+    panel.appendChild(unavailable);
+    state.selectedMarker = null;
+  } else {
+    const section = document.createElement("section");
+    section.className = "marker-breakdown";
+    const heading = document.createElement("h3");
+    heading.textContent = `표본 수량 ${productQuantityText(product)}의 원천 표시별 구성`;
+    const explanation = document.createElement("p");
+    explanation.textContent = "표시 없음은 판매 확정이 아니며, 표시 있음도 원거래 연결이나 환불 완료를 뜻하지 않습니다.";
+    const controls = document.createElement("div");
+    controls.className = "marker-filter-list";
+
+    const addFilter = ({marker, label, detail, disabled = false}) => {
+      const button = document.createElement("button");
+      const active = marker === state.selectedMarker;
+      button.type = "button";
+      button.className = `marker-filter${active ? " is-active" : ""}`;
+      button.disabled = disabled;
+      button.setAttribute("aria-pressed", String(active));
+      const strong = document.createElement("strong");
+      strong.textContent = label;
+      const span = document.createElement("span");
+      span.textContent = detail;
+      button.append(strong, span);
+      if (!disabled) {
+        button.addEventListener("click", () => {
+          state.selectedMarker = marker;
+          renderContributions(product);
+        });
+      }
+      controls.appendChild(button);
+    };
+
+    addFilter({
+      marker: null,
+      label: "전체 기여 행",
+      detail: `수량 합계 ${productQuantityText(product)} · ${product.observed_row_count.toLocaleString("ko-KR")}행`,
+    });
+    ["true", "false", "unknown"].forEach((marker) => {
+      const group = groups.find((item) => item.source_cancellation_marker === marker);
+      addFilter({
+        marker,
+        label: markerLabel(marker),
+        detail: group
+          ? `부호 있는 수량 ${exactIntegerText(group.signed_quantity_sum_text)} · ${group.observed_row_count.toLocaleString("ko-KR")}행`
+          : "해당 행 없음",
+        disabled: !group,
+      });
+    });
+    section.append(heading, explanation, controls);
+    panel.appendChild(section);
+  }
+
+  let rows = product.contributing_rows;
+  if (groups && state.selectedMarker !== null) {
+    const selectedGroup = groups.find(
+      (item) => item.source_cancellation_marker === state.selectedMarker
+    );
+    const sourceRows = new Set(selectedGroup?.contributing_excel_rows || []);
+    rows = product.contributing_rows.filter((row) => sourceRows.has(row.source_row_number));
+    const selection = document.createElement("p");
+    selection.className = "marker-selection";
+    selection.textContent = `${markerLabel(state.selectedMarker)} · ${rows.map((row) => `Excel ${row.source_row_number}행`).join(" · ")}`;
+    panel.appendChild(selection);
+  }
+
+  rows.forEach((row) => {
     const item = document.createElement("article");
     item.className = "contribution";
     const head = document.createElement("div");
     head.className = "contribution-head";
     const title = document.createElement("strong");
-    title.textContent = `${row.invoice_no ?? "InvoiceNo 없음"} · 수량 ${row.quantity}`;
+    const quantity = integerText(row.quantity_integer_text, row.quantity);
+    title.textContent = `${row.invoice_no ?? "InvoiceNo 없음"} · 수량 ${quantity}`;
     const location = document.createElement("span");
     location.textContent = `Excel ${row.source_row_number}행`;
     head.append(title, location);
     const description = document.createElement("p");
     description.textContent = `${row.description} · ${cancellationMarkerText(row)} · 원본에서 읽은 단가 ${row.unit_price_source_text} · ${row.invoice_timestamp}`;
-    item.append(head, description);
+    const compareAction = document.createElement("button");
+    compareAction.type = "button";
+    compareAction.className = "contribution-compare-button";
+    compareAction.textContent = "선택한 두 결과에서 이 행 보기";
+    compareAction.setAttribute(
+      "aria-label",
+      `${row.sheet} Excel ${row.source_row_number}행이 선택한 두 결과에 기여했는지 보기`
+    );
+    compareAction.addEventListener("click", () => openContributionComparison(product, row));
+    item.append(head, description, compareAction);
     panel.appendChild(item);
   });
 }
 
+function openContributionComparison(product, row) {
+  state.comparisonRowFocus = {
+    sourceFileId: state.result.source.source_file_id,
+    sheet: row.sheet,
+    sourceRowNumber: Number(row.source_row_number),
+    stockCode: product.stock_code,
+    observedDate: product.observed_date,
+  };
+  showComparisonRowTrace(
+    state.comparisonRowFocus,
+    "처리 이력에서 선택한 두 저장 결과를 읽어 이 행의 기여 여부를 확인합니다."
+  );
+  switchView("runs", false);
+  const hasSelectedPair = byId("baseResult").value && byId("currentResult").value;
+  if (state.publishedResults.length >= 2 && hasSelectedPair) {
+    renderComparison();
+  } else {
+    renderRuns();
+  }
+}
+
 function renderSource(product) {
+  renderSourceDetails(
+    product.contributing_rows.map((row) => row.source_row_number).join(", ")
+  );
+}
+
+function renderSourceDetails(selectedRows) {
   const panel = byId("sourceTab");
   panel.replaceChildren();
   const list = document.createElement("dl");
@@ -133,7 +597,7 @@ function renderSource(product) {
     ["데이터셋", state.result.source.dataset],
     ["파일 지문", state.result.source.sha256],
     ["시트", state.result.source.sheet],
-    ["선택 행", product.contributing_rows.map((row) => row.source_row_number).join(", ")],
+    ["선택 행", selectedRows],
     ["표본 한계", state.result.source.scope_note],
   ];
   entries.forEach(([term, description]) => {
@@ -155,7 +619,7 @@ function renderQuality() {
   );
   const checks = [
     ["확인됨", "원본 파일 지문", `manifest의 SHA-256과 일치한 파일만 공개됐습니다. ${shortId(state.result.source.sha256, 16)}`],
-    ["확인됨", "선택한 원본 행", `Excel ${state.result.source.selected_excel_rows.join(", ")}행, 총 ${rowCount}행이 상품별 결과에 연결됐습니다.`],
+    ["확인됨", "선택한 원본 행", `${selectedRowsSummary(state.result.source.selected_excel_rows)}, 총 ${rowCount.toLocaleString("ko-KR")}행이 상품별 결과에 연결됐습니다.`],
     ["범위 제한", "완전성", "선택한 행 안에서만 완료된 결과입니다. 하루 전체나 파일 전체의 판매 결과가 아닙니다."],
     [
       markerRecorded ? "관찰 규칙" : "미계산",
@@ -182,13 +646,15 @@ function renderQuality() {
 }
 
 function resultOptionLabel(result) {
-  const rows = result.selected_excel_rows.join(",");
-  return `${shortId(result.run_id, 10)} · Excel ${rows}행${result.is_current ? " · 현재" : ""}`;
+  return `${shortId(result.run_id, 10)} · ${selectedRowsSummary(result.selected_excel_rows)}${result.is_current ? " · 현재" : ""}`;
 }
 
 function fillResultSelectors(results) {
   const baseSelect = byId("baseResult");
   const currentSelect = byId("currentResult");
+  const preferredBaseRunId = baseSelect.value;
+  const preferredCurrentRunId = currentSelect.value;
+  const availableRunIds = new Set(results.map((result) => result.run_id));
   baseSelect.replaceChildren();
   currentSelect.replaceChildren();
   results.forEach((result) => {
@@ -200,25 +666,51 @@ function fillResultSelectors(results) {
     });
   });
 
-  const current = results.find((result) => result.is_current) || results[0];
-  const base = results.find((result) => result.run_id !== current?.run_id) || current;
-  if (current) currentSelect.value = current.run_id;
-  if (base) baseSelect.value = base.run_id;
+  const defaultCurrent = results.find((result) => result.is_current) || results[0];
+  let baseRunId = availableRunIds.has(preferredBaseRunId)
+    ? preferredBaseRunId
+    : null;
+  let currentRunId = availableRunIds.has(preferredCurrentRunId)
+    ? preferredCurrentRunId
+    : null;
+  if (!currentRunId) {
+    currentRunId = [defaultCurrent, ...results].find(
+      (result) => result && result.run_id !== baseRunId
+    )?.run_id || defaultCurrent?.run_id || null;
+  }
+  if (!baseRunId) {
+    baseRunId = results.find(
+      (result) => result.run_id !== currentRunId
+    )?.run_id || currentRunId;
+  }
+  if (currentRunId) currentSelect.value = currentRunId;
+  if (baseRunId) baseSelect.value = baseRunId;
+
+  const missingSelections = [];
+  if (preferredBaseRunId && !availableRunIds.has(preferredBaseRunId)) {
+    missingSelections.push("이전 결과");
+  }
+  if (preferredCurrentRunId && !availableRunIds.has(preferredCurrentRunId)) {
+    missingSelections.push("현재 결과");
+  }
+  if (!preferredBaseRunId && !preferredCurrentRunId && results.length) {
+    state.comparisonSelectionNotice = "처음 열어 현재 결과와 다른 완료 결과를 기본 선택했습니다.";
+  } else if (missingSelections.length) {
+    state.comparisonSelectionNotice = `${missingSelections.join("·")}가 새 목록에 없어 남아 있는 완료 결과로 다시 선택했습니다.`;
+  } else {
+    state.comparisonSelectionNotice = "";
+  }
   byId("compareButton").disabled = results.length < 2;
 }
 
 function comparisonBasisText(basis) {
   if (basis.code === "selection_scope_changed") {
-    const added = basis.selected_rows_added.length
-      ? `추가 Excel ${basis.selected_rows_added.join(", ")}행`
-      : "추가 행 없음";
-    const removed = basis.selected_rows_removed.length
-      ? `빠진 Excel ${basis.selected_rows_removed.join(", ")}행`
-      : "빠진 행 없음";
-    return `선택 범위 변경 · ${added} · ${removed}`;
+    const added = changedRowsSummary("추가", basis.selected_rows_added);
+    const removed = changedRowsSummary("빠진", basis.selected_rows_removed);
+    return `비교 기준 다름 · 선택 범위 변경 · ${added} · ${removed}. 숫자가 달라진 상품은 추가·빠진 원래 거래를 확인하세요.`;
   }
   if (basis.code === "same_input_scope_and_rule") {
-    return "같은 원본·선택 범위·집계 SQL·원천 해석 규칙입니다.";
+    return "비교 기준 같음 · 원본 파일·시트·선택 범위·집계 SQL·원천 해석 규칙이 같습니다.";
   }
   const changed = [];
   if (basis.source_file_changed) changed.push("원본 파일 지문");
@@ -234,12 +726,15 @@ function comparisonBasisText(basis) {
     changed.push("원천 해석 규칙 ID 미기록");
   }
   if (basis.selection_scope_changed) changed.push("선택 범위");
-  return `달라졌거나 확인이 필요한 기준: ${changed.join(" · ")}. 늦은 입력으로 단정하지 않고 각 기준을 따로 확인합니다.`;
+  const stateText = basis.transformation_rule_unrecorded
+    ? "비교 기준 일부 확인 불가"
+    : "비교 기준 다름";
+  return `${stateText} · ${changed.join(" · ")}. 숫자가 같아도 바뀐 기준과 원래 거래를 확인하세요.`;
 }
 
-function metricText(stateName, quantity, rowCount) {
+function metricText(stateName, quantityText, quantity, rowCount) {
   if (stateName === "not_present") return "없음";
-  return `${quantity.toLocaleString("ko-KR")} / ${rowCount.toLocaleString("ko-KR")}행`;
+  return `${integerText(quantityText, quantity)} / ${rowCount.toLocaleString("ko-KR")}행`;
 }
 
 function locationText(prefix, locations) {
@@ -251,57 +746,407 @@ function locationText(prefix, locations) {
   });
 }
 
+function valueChangeText(group) {
+  if (group.base_state === "not_present") return "값: 현재 결과에 새로 나타남";
+  if (group.current_state === "not_present") return "값: 현재 결과에 없음(0 아님)";
+
+  const changed = [];
+  const quantityChanged = "quantity_sum_changed" in group
+    ? group.quantity_sum_changed
+    : group.base_sample_quantity_sum !== group.current_sample_quantity_sum;
+  const rowCountChanged = "observed_row_count_changed" in group
+    ? group.observed_row_count_changed
+    : group.base_observed_row_count !== group.current_observed_row_count;
+  if (quantityChanged) {
+    changed.push("수량 합계");
+  }
+  if (rowCountChanged) {
+    changed.push("관찰 행 수");
+  }
+  return changed.length ? `값: ${changed.join("·")} 달라짐` : "값: 같음";
+}
+
+function basisEvidence(basis) {
+  const evidence = [];
+  if (basis.source_file_changed) evidence.push("원본 파일");
+  if (basis.sheet_changed) evidence.push("시트");
+  if (basis.aggregation_rule_changed) evidence.push("집계 SQL");
+  if (basis.transformation_rule_changed || basis.transformation_rule_unrecorded) {
+    evidence.push("원천 해석 규칙");
+  }
+  return evidence;
+}
+
+function evidenceText(group, basis) {
+  const locationsChanged = group.added_source_rows.length || group.removed_source_rows.length;
+  const valueChanged = group.base_state !== group.current_state
+    || ("quantity_sum_changed" in group
+      ? group.quantity_sum_changed
+      : group.base_sample_quantity_sum !== group.current_sample_quantity_sum)
+    || ("observed_row_count_changed" in group
+      ? group.observed_row_count_changed
+      : group.base_observed_row_count !== group.current_observed_row_count);
+  const evidence = [];
+
+  if (locationsChanged) evidence.push("추가·빠진 원래 거래");
+  basisEvidence(basis).forEach((item) => evidence.push(item));
+  if (valueChanged && !locationsChanged && !evidence.length) {
+    evidence.push("해당 원래 거래 값", "적용 SQL");
+  }
+  return evidence.length
+    ? `다음 확인: ${[...new Set(evidence)].join(" · ")}`
+    : "이 상품에서는 값·원본 위치 변화 없음";
+}
+
+function appendComparisonLine(container, text, className = "") {
+  const line = document.createElement("span");
+  line.textContent = text;
+  if (className) line.className = className;
+  container.appendChild(line);
+}
+
+function comparisonMetricCell({side, group, runId}) {
+  const cell = document.createElement("td");
+  cell.className = "number comparison-result-cell";
+  const value = document.createElement("span");
+  const isBase = side === "base";
+  value.textContent = metricText(
+    isBase ? group.base_state : group.current_state,
+    isBase ? group.base_sample_quantity_sum_text : group.current_sample_quantity_sum_text,
+    isBase ? group.base_sample_quantity_sum : group.current_sample_quantity_sum,
+    isBase ? group.base_observed_row_count : group.current_observed_row_count
+  );
+  const action = document.createElement("button");
+  action.type = "button";
+  action.className = "comparison-open-button";
+  action.textContent = isBase ? "이전 근거" : "이후 근거";
+  action.setAttribute(
+    "aria-label",
+    `${group.observed_date} ${group.stock_code} ${action.textContent} 보기`
+  );
+  action.addEventListener("click", () => openComparedResult({side, group, runId}));
+  cell.append(value, action);
+  return cell;
+}
+
+async function readStoredResult(runId) {
+  try {
+    const query = new URLSearchParams({run_id: runId});
+    const response = await fetch(`/api/result?${query}`, {cache: "no-store"});
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.message || `HTTP ${response.status}`);
+    if (payload.result?.run?.run_id !== runId) {
+      throw new Error("요청한 실행과 다른 저장 결과가 반환됐습니다.");
+    }
+    return {dataState: "available", ...payload};
+  } catch (error) {
+    return {dataState: "read_error", message: error.message};
+  }
+}
+
+function findRowContribution(result, focus) {
+  if (result.source.source_file_id !== focus.sourceFileId) return null;
+  for (const product of result.products) {
+    const row = product.contributing_rows.find(
+      (candidate) => candidate.sheet === focus.sheet
+        && Number(candidate.source_row_number) === focus.sourceRowNumber
+    );
+    if (row) return {product, row};
+  }
+  return null;
+}
+
+function comparisonRowResultCard({side, runId, read, focus}) {
+  const card = document.createElement("article");
+  card.className = "comparison-row-result";
+  const heading = document.createElement("div");
+  heading.className = "comparison-row-result-head";
+  const label = document.createElement("strong");
+  label.textContent = `${side === "base" ? "이전 결과" : "이후 결과"} · run ${shortId(runId)}`;
+  heading.appendChild(label);
+  card.appendChild(heading);
+
+  if (read.dataState !== "available") {
+    card.classList.add("is-unknown");
+    const stateLine = document.createElement("p");
+    stateLine.className = "comparison-row-contribution-state";
+    stateLine.textContent = "기여 여부 확인 불가";
+    const reason = document.createElement("p");
+    reason.textContent = `저장 결과를 읽지 못했습니다: ${read.message}`;
+    card.append(stateLine, reason);
+    return card;
+  }
+
+  const result = read.result;
+  const contribution = findRowContribution(result, focus);
+  const focusProduct = result.products.find(
+    (product) => product.observed_date === focus.observedDate
+      && product.stock_code === focus.stockCode
+  );
+  const linkedProduct = contribution?.product || focusProduct;
+  const linkedFocus = contribution
+    ? {
+        observedDate: contribution.product.observed_date,
+        stockCode: contribution.product.stock_code,
+      }
+    : {
+        observedDate: focus.observedDate,
+        stockCode: focus.stockCode,
+      };
+  const stateLine = document.createElement("p");
+  stateLine.className = "comparison-row-contribution-state";
+  if (contribution) {
+    stateLine.textContent = `기여함 · 부호 있는 수량 ${integerText(contribution.row.quantity_integer_text, contribution.row.quantity)}`;
+    card.classList.add("is-contributing");
+  } else {
+    stateLine.textContent = "기여하지 않음";
+  }
+  const reason = document.createElement("p");
+  if (result.source.source_file_id !== focus.sourceFileId) {
+    reason.textContent = "원본 파일 지문이 달라 같은 Excel 행번호여도 같은 원래 거래로 보지 않습니다.";
+  } else if (result.source.sheet !== focus.sheet) {
+    reason.textContent = "시트가 달라 같은 Excel 행번호여도 같은 원래 거래로 보지 않습니다.";
+  } else if (!contribution) {
+    reason.textContent = "이 저장 결과의 기여 행에 해당 원본 위치가 없습니다.";
+  } else {
+    reason.textContent = `${contribution.product.observed_date} · ${contribution.product.stock_code} 결과에 들어갔습니다.`;
+  }
+
+  const productLine = document.createElement("p");
+  productLine.className = "comparison-row-product-state";
+  productLine.textContent = linkedProduct
+    ? `${linkedFocus.observedDate} · ${linkedFocus.stockCode} 결과 ${productQuantityText(linkedProduct)} / ${linkedProduct.observed_row_count.toLocaleString("ko-KR")}행`
+    : `${focus.observedDate} · ${focus.stockCode} 결과 없음(0 아님)`;
+
+  const action = document.createElement("button");
+  action.type = "button";
+  action.className = "comparison-open-button";
+  action.textContent = "이 결과의 당시 근거";
+  action.addEventListener("click", () => openComparedResult({
+    side,
+    runId,
+    group: {
+      observed_date: linkedFocus.observedDate,
+      stock_code: linkedFocus.stockCode,
+    },
+  }));
+  card.append(stateLine, reason, productLine, action);
+  return card;
+}
+
+async function renderComparisonRowTrace(comparison, comparisonVersion) {
+  const focus = state.comparisonRowFocus;
+  if (!focus) {
+    hideComparisonRowTrace();
+    return;
+  }
+  const requestVersion = ++state.comparisonRowRequestVersion;
+  const focusSnapshot = {...focus};
+  showComparisonRowTrace(focusSnapshot, "두 저장 결과의 기여 행을 읽는 중입니다.");
+  const [baseRead, currentRead] = await Promise.all([
+    readStoredResult(comparison.base_run_id),
+    readStoredResult(comparison.current_run_id),
+  ]);
+  if (
+    comparisonVersion !== state.comparisonRequestVersion
+    || requestVersion !== state.comparisonRowRequestVersion
+    || state.comparisonRowFocus !== focus
+  ) return;
+
+  const results = byId("comparisonRowTraceResults");
+  results.replaceChildren(
+    comparisonRowResultCard({
+      side: "base",
+      runId: comparison.base_run_id,
+      read: baseRead,
+      focus: focusSnapshot,
+    }),
+    comparisonRowResultCard({
+      side: "current",
+      runId: comparison.current_run_id,
+      read: currentRead,
+      focus: focusSnapshot,
+    })
+  );
+  const failedCount = [baseRead, currentRead].filter(
+    (read) => read.dataState !== "available"
+  ).length;
+  setText(
+    "comparisonRowTraceState",
+    failedCount
+      ? `${failedCount}개 저장 결과는 읽지 못해 비기여가 아니라 확인 불가로 남겼습니다.`
+      : "각 결과가 저장할 때 남긴 기여 행만 대조했습니다. 한 행만으로 수량 변화의 업무 원인을 확정하지 않습니다."
+  );
+}
+
+async function openComparedResult({side, group, runId}) {
+  finishCurrentResultRequest();
+  const requestVersion = ++state.resultRequestVersion;
+  const previousComparisonState = {
+    value: state.comparisonStableState,
+    rowChanges: state.comparisonStableRowChanges,
+  };
+  renderComparisonState(
+    `${side === "base" ? "이전" : "이후"} 저장 결과의 근거를 읽는 중입니다.`
+  );
+  try {
+    const query = new URLSearchParams({run_id: runId});
+    const response = await fetch(`/api/result?${query}`, {cache: "no-store"});
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.message || `HTTP ${response.status}`);
+    if (requestVersion !== state.resultRequestVersion) return;
+    if (payload.result?.run?.run_id !== runId) {
+      throw new Error("요청한 실행과 다른 저장 결과가 반환됐습니다.");
+    }
+
+    const focus = {
+      observedDate: group.observed_date,
+      stockCode: group.stock_code,
+    };
+    state.result = payload.result;
+    state.resultContext = {
+      side,
+      isCurrent: Boolean(payload.is_current),
+      focus,
+      previousFilter: byId("productFilter").value,
+      previousSort: byId("productSort").value,
+      comparisonState: previousComparisonState,
+    };
+    state.selected = null;
+    state.selectedMarker = null;
+    byId("productFilter").value = group.stock_code;
+    byId("productFilter").disabled = true;
+    renderOverview();
+    switchTab("rows");
+    switchView("overview", false);
+    const product = state.result.products.find(
+      (item) => item.observed_date === focus.observedDate
+        && item.stock_code === focus.stockCode
+    );
+    if (product) {
+      selectProduct(product);
+    } else {
+      showMissingComparedProduct(focus);
+    }
+    const badge = byId("resultBadge");
+    badge.textContent = payload.is_current ? "비교의 현재 공개 결과" : "지난 실행 읽는 중";
+    badge.className = "status-badge";
+  } catch (error) {
+    if (requestVersion !== state.resultRequestVersion) return;
+    renderComparisonState(`저장 결과의 근거를 읽지 못했습니다: ${error.message}`);
+  }
+}
+
+function returnToComparison() {
+  const context = state.resultContext;
+  if (!context) return;
+  invalidatePendingResultRequest();
+  state.result = state.currentResult;
+  state.resultContext = null;
+  state.selected = null;
+  state.selectedMarker = null;
+  byId("productFilter").disabled = false;
+  byId("productFilter").value = context.previousFilter;
+  byId("productSort").value = context.previousSort;
+  renderOverview();
+  clearProductDetail();
+  setStableComparisonState(
+    context.comparisonState.value,
+    context.comparisonState.rowChanges
+  );
+  const badge = byId("resultBadge");
+  badge.textContent = "선택 행 처리 완료";
+  badge.className = "status-badge is-ready";
+  switchView("runs", false);
+}
+
 async function renderComparison() {
+  invalidatePendingResultRequest();
+  const requestVersion = ++state.comparisonRequestVersion;
   const baseRunId = byId("baseResult").value;
   const currentRunId = byId("currentResult").value;
   if (!baseRunId || !currentRunId) {
-    setText("comparisonState", "비교하려면 완료 결과가 두 개 이상 필요합니다.");
+    setStableComparisonState("비교하려면 완료 결과가 두 개 이상 필요합니다.");
     byId("comparisonTable").hidden = true;
     return;
   }
 
-  setText("comparisonState", "두 완료 결과의 계산값과 포함 행을 읽는 중입니다.");
+  renderComparisonState("두 완료 결과의 계산값과 포함 행을 읽는 중입니다.");
   byId("comparisonTable").hidden = true;
   try {
     const query = new URLSearchParams({base_run_id: baseRunId, current_run_id: currentRunId});
     const response = await fetch(`/api/comparison?${query}`, {cache: "no-store"});
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.message || `HTTP ${response.status}`);
-    setText("comparisonState", comparisonBasisText(payload.change_basis));
+    if (requestVersion !== state.comparisonRequestVersion) return;
+    const selectionNotice = state.comparisonSelectionNotice;
+    state.comparisonSelectionNotice = "";
+    const comparisonState = selectionNotice
+      ? `${selectionNotice} ${comparisonBasisText(payload.change_basis)}`
+      : comparisonBasisText(payload.change_basis);
+    const rowChanges = payload.change_basis.code === "selection_scope_changed"
+      ? {
+          added: payload.change_basis.selected_rows_added,
+          removed: payload.change_basis.selected_rows_removed,
+        }
+      : null;
+    setStableComparisonState(comparisonState, rowChanges);
 
     const body = byId("comparisonRows");
     body.replaceChildren();
     payload.groups.forEach((group) => {
       const row = document.createElement("tr");
       if (group.changed) row.classList.add("is-changed");
-      const values = [
-        group.observed_date,
-        group.stock_code,
-        metricText(group.base_state, group.base_sample_quantity_sum, group.base_observed_row_count),
-        metricText(group.current_state, group.current_sample_quantity_sum, group.current_observed_row_count),
-      ];
-      values.forEach((value, index) => {
+      const basisNeedsReview = payload.change_basis.source_file_changed
+        || payload.change_basis.sheet_changed
+        || payload.change_basis.aggregation_rule_changed
+        || payload.change_basis.transformation_rule_changed
+        || payload.change_basis.transformation_rule_unrecorded;
+      if (!group.changed && basisNeedsReview) row.classList.add("needs-review");
+      [group.observed_date, group.stock_code].forEach((value) => {
         const cell = document.createElement("td");
         cell.textContent = value;
-        if (index >= 2) cell.className = "number";
         row.appendChild(cell);
       });
+      row.appendChild(comparisonMetricCell({
+        side: "base",
+        group,
+        runId: payload.base_run_id,
+      }));
+      row.appendChild(comparisonMetricCell({
+        side: "current",
+        group,
+        runId: payload.current_run_id,
+      }));
       const changeCell = document.createElement("td");
       const changes = [
         ...locationText("+", group.added_source_rows),
         ...locationText("−", group.removed_source_rows),
       ];
-      changeCell.textContent = changes.length ? changes.join(" · ") : "변화 없음";
+      changeCell.className = "comparison-detail";
+      appendComparisonLine(changeCell, valueChangeText(group), "comparison-value-state");
+      appendComparisonLine(
+        changeCell,
+        changes.length ? `원본 위치: ${changes.join(" · ")}` : "원본 위치: 같음"
+      );
+      appendComparisonLine(
+        changeCell,
+        evidenceText(group, payload.change_basis),
+        "comparison-next-evidence"
+      );
       row.appendChild(changeCell);
       body.appendChild(row);
     });
     byId("comparisonTable").hidden = false;
+    renderComparisonRowTrace(payload, requestVersion);
   } catch (error) {
-    setText("comparisonState", `결과 비교를 읽지 못했습니다: ${error.message}`);
+    if (requestVersion !== state.comparisonRequestVersion) return;
+    renderComparisonState(`결과 비교를 읽지 못했습니다: ${error.message}`);
   }
 }
 
 async function renderRuns() {
+  const requestVersion = ++state.runsRequestVersion;
   const body = byId("runRows");
   body.replaceChildren();
   try {
@@ -313,10 +1158,11 @@ async function renderRuns() {
     const results = await resultsResponse.json();
     if (!runsResponse.ok || !Array.isArray(runs)) throw new Error(runs.message || `HTTP ${runsResponse.status}`);
     if (!resultsResponse.ok || !Array.isArray(results)) throw new Error(results.message || `HTTP ${resultsResponse.status}`);
+    if (requestVersion !== state.runsRequestVersion) return;
     runs.forEach((run) => {
       const row = document.createElement("tr");
       const id = document.createElement("td");
-      const scope = run.selected_excel_rows ? ` · ${run.selected_excel_rows.join(",")}행` : "";
+      const scope = run.selected_excel_rows ? ` · ${selectedRowsSummary(run.selected_excel_rows)}` : "";
       id.textContent = `${shortId(run.run_id, 12)}${scope}`;
       const status = document.createElement("td");
       status.textContent = run.recovered_at
@@ -341,22 +1187,34 @@ async function renderRuns() {
     if (results.length >= 2) {
       await renderComparison();
     } else {
-      setText("comparisonState", "비교하려면 완료 결과가 두 개 이상 필요합니다.");
+      const selectionNotice = state.comparisonSelectionNotice;
+      state.comparisonSelectionNotice = "";
+      setStableComparisonState(
+        `${selectionNotice ? `${selectionNotice} ` : ""}비교하려면 완료 결과가 두 개 이상 필요합니다.`
+      );
+      if (state.comparisonRowFocus) {
+        showComparisonRowTrace(
+          state.comparisonRowFocus,
+          "이 행을 비교하려면 성공해 공개된 결과가 두 개 이상 필요합니다."
+        );
+      }
       byId("comparisonTable").hidden = true;
     }
   } catch (error) {
+    if (requestVersion !== state.runsRequestVersion) return;
     const row = document.createElement("tr");
     const cell = document.createElement("td");
     cell.colSpan = 4;
     cell.textContent = `처리 이력을 읽지 못했습니다: ${error.message}`;
     row.appendChild(cell);
     body.appendChild(row);
-    setText("comparisonState", `완료 결과를 읽지 못했습니다: ${error.message}`);
+    setStableComparisonState(`완료 결과를 읽지 못했습니다: ${error.message}`);
     byId("comparisonTable").hidden = true;
   }
 }
 
-function switchView(name) {
+function switchView(name, refreshRuns = true, userInitiated = false) {
+  if (userInitiated) leavePendingResultContext();
   state.currentView = name;
   document.querySelectorAll(".nav-button").forEach((button) => {
     button.classList.toggle("is-active", button.dataset.view === name);
@@ -364,7 +1222,7 @@ function switchView(name) {
   byId("overviewView").hidden = name !== "overview";
   byId("qualityView").hidden = name !== "quality";
   byId("runsView").hidden = name !== "runs";
-  if (name === "runs") renderRuns();
+  if (name === "runs" && refreshRuns) renderRuns();
 }
 
 function switchTab(name) {
@@ -378,34 +1236,85 @@ function switchTab(name) {
   byId("sqlTab").hidden = name !== "sql";
 }
 
-async function loadResult() {
+async function loadCurrentResult({initial = false} = {}) {
+  const requestVersion = ++state.resultRequestVersion;
+  const refreshButton = byId("refreshCurrentResult");
+  const previousFocus = state.selected
+    ? {
+        observedDate: state.selected.observed_date,
+        stockCode: state.selected.stock_code,
+      }
+    : state.resultContext?.focus || null;
+  if (!initial) {
+    refreshButton.disabled = true;
+    refreshButton.textContent = "최신 결과 확인 중";
+    setText("currentResultState", "서버에 현재로 등록된 완료 결과를 확인하는 중입니다.");
+  }
   try {
     const response = await fetch("/api/result", {cache: "no-store"});
     const payload = await response.json();
     if (!response.ok) {
-      showError(payload, response.status);
-      return;
+      throw new Error(payload.message || `HTTP ${response.status}`);
     }
+    if (requestVersion !== state.resultRequestVersion) return;
+    state.currentResult = payload;
     state.result = payload;
+    state.resultContext = null;
+    state.selected = null;
+    state.selectedMarker = null;
+    byId("productFilter").disabled = false;
     byId("loadingState").hidden = true;
     byId("errorState").hidden = true;
-    byId("overviewView").hidden = false;
     const badge = byId("resultBadge");
-    badge.textContent = "선택 행 처리 완료";
+    badge.textContent = "조회 당시 최신 공개 결과";
     badge.className = "status-badge is-ready";
     renderOverview();
+    if (previousFocus) {
+      const product = payload.products.find(
+        (item) => item.observed_date === previousFocus.observedDate
+          && item.stock_code === previousFocus.stockCode
+      );
+      if (product) {
+        selectProduct(product);
+      } else {
+        clearProductDetail("새로 읽은 현재 결과에는 이전에 보던 상품·날짜가 없습니다. 0으로 계산한 뜻은 아닙니다.");
+      }
+    } else {
+      clearProductDetail();
+    }
+    switchView("overview", false);
+    setCurrentLookupState(
+      `마지막 현재 결과 조회 run ${shortId(payload.run.run_id)} · ${initial ? "처음 연" : "다시 읽은"} 시점 기준`
+    );
   } catch (error) {
-    showError({data_state: "read_error", message: error.message}, 0);
+    if (requestVersion !== state.resultRequestVersion) return;
+    if (initial) {
+      setCurrentLookupState(`현재 공개 결과를 읽지 못했습니다: ${error.message}`);
+      showError({data_state: "read_error", message: error.message}, 0);
+      renderDisplayedResultState();
+    } else {
+      const cachedRun = state.currentResult?.run?.run_id;
+      setCurrentLookupState(
+        `최근 현재 결과 조회 실패 · ${cachedRun ? `마지막 성공 run ${shortId(cachedRun)} 유지` : "성공한 현재 결과 조회 없음"}: ${error.message}`
+      );
+    }
+  } finally {
+    if (requestVersion === state.resultRequestVersion) finishCurrentResultRequest();
   }
 }
 
 document.querySelectorAll(".nav-button").forEach((button) => {
-  button.addEventListener("click", () => switchView(button.dataset.view));
+  button.addEventListener("click", () => switchView(button.dataset.view, true, true));
 });
 document.querySelectorAll(".tab").forEach((button) => {
   button.addEventListener("click", () => switchTab(button.dataset.tab));
 });
 byId("productFilter").addEventListener("input", renderProductRows);
+byId("productSort").addEventListener("change", renderProductRows);
+byId("baseResult").addEventListener("change", changeComparisonSelection);
+byId("currentResult").addEventListener("change", changeComparisonSelection);
 byId("compareButton").addEventListener("click", renderComparison);
+byId("backToComparison").addEventListener("click", returnToComparison);
+byId("refreshCurrentResult").addEventListener("click", () => loadCurrentResult());
 
-loadResult();
+loadCurrentResult({initial: true});
