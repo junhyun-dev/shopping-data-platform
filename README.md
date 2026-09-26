@@ -2,6 +2,8 @@
 
 결국 **실제 거래 표본의 상품별 숫자를 보고, 그 숫자에 들어간 Excel 원본 행과 계산 SQL까지 확인하는 로컬 서비스**다.
 
+**2026-09-26 보존 상태:** 개발을 일시정지하고 구현과 선택을 회고하는 중이다. 이 작업 브랜치에는 저장 결과 비교·당시 근거·원천 표시별 구성·정밀 수량·정렬 탐색과 기여행 단일 조회를 담았다. 적재 단계 계측과 임시 staging 대안은 로컬 실험 관찰이며 실제 적재 방식은 바꾸지 않았다. JSON 전달 대안은 구현·검수 완료로 포함하지 않는다. [실제 비교 시연](#interactive-demo)은 아래 명령으로 다시 열 수 있으며 웹 서비스 배포는 아니다.
+
 기본 실행은 UCI `Online Retail.xlsx`의 Excel 2–8행과 143행을 다룬다. 같은 보존 파일에서 실행별 선택 행을 바꿔 결과 차이를 확인할 수도 있다. `Quantity`의 부호를 그대로 보존하여 상품 코드와 원문 `InvoiceDate`의 날짜 부분으로 묶고 다음 두 값을 만들며, 상세에서는 `InvoiceNo`에 나타난 원천 취소 표시를 별도로 보여 준다.
 
 - **표본 수량 합계:** 선택한 행들의 `Quantity` 합
@@ -46,13 +48,14 @@ Linux 또는 WSL2, Python 3.10 이상을 사용한다. 프로세스 잠금·중�
 ```bash
 git clone https://github.com/junhyun-dev/shopping-data-platform.git
 cd shopping-data-platform
+git switch --track origin/feature/uci-sample-first-slice
 python3 -m venv .venv
 . .venv/bin/activate
 python -m pip install "duckdb==1.4.4" "openpyxl==3.1.5" "pytz==2025.2" "pytest>=9,<10>"
 pytest -q tests/test_pipeline.py
 ```
 
-데이터를 받기 전에는 가공 테스트 자료로 UCI 파이프라인의 20개 검사가 통과하고, 실제 UCI 파일을 읽는 1개 검사는 건너뛴다. 실제 자료로 실행하려면 [UCI 공식 다운로드](https://archive.ics.uci.edu/static/public/352/online%2Bretail.zip)에서 ZIP을 받아 `Online Retail.xlsx`만 `data/source/Online Retail.xlsx`에 둔다. 원본 파일은 저장소에 포함하지 않는다.
+데이터를 받기 전에도 가공 자료 기반 검사를 실행할 수 있으며, 보존 UCI 파일을 요구하는 검사는 건너뛴다. 실제 자료로 실행하려면 [UCI 공식 다운로드](https://archive.ics.uci.edu/static/public/352/online%2Bretail.zip)에서 ZIP을 받아 `Online Retail.xlsx`만 `data/source/Online Retail.xlsx`에 둔다. 원본 파일은 저장소에 포함하지 않는다.
 
 ```bash
 mkdir -p data/source
@@ -63,7 +66,7 @@ pytest -q tests/test_pipeline.py
 python -m shopping_data serve
 ```
 
-파이프라인은 실행 전에 `config/source.json`의 SHA-256과 파일을 대조한다. 기대 지문은 `43465a06f2ccf7c8b5bd2892bc7defb52f97487934fe93b16ae4c3936424676d`이며 다르면 중단한다. `independent_check.py`는 별도 openpyxl 계산값을 출력하고, 실제 UCI 테스트는 이와 같은 독립 계산을 SQL 결과와 대조한다. 파일을 받은 뒤에는 실제 원본 검사를 포함해 UCI 파이프라인의 21개 검사가 실행된다.
+파이프라인은 실행 전에 `config/source.json`의 SHA-256과 파일을 대조한다. 기대 지문은 `43465a06f2ccf7c8b5bd2892bc7defb52f97487934fe93b16ae4c3936424676d`이며 다르면 중단한다. `independent_check.py`는 별도 openpyxl 계산값을 출력하고, 실제 UCI 테스트는 이와 같은 독립 계산을 SQL 결과와 대조한다. 파일을 받은 뒤에는 실제 원본을 읽는 검사도 실행된다. 보존 커밋을 위해 전체 검사를 새로 반복하지 않았으며, 각 변경은 해당 SQL·파이프라인·실제 브라우저 경로의 기존 검증 근거를 사용했다.
 
 같은 파일에서 선택 범위만 바꾸는 실행 예는 다음과 같다. 행 순서는 범위의 뜻을 바꾸지 않으므로 `--rows 3,2`는 `[2,3]`으로 정규화된다.
 
@@ -353,3 +356,11 @@ python tools/run_kafka_experiment.py --run-root "$(mktemp -d -p /tmp shopping-ka
 [GitHub 첫 게시](https://github.com/junhyun-dev/shopping-data-platform/tree/6111db04ba383d9098665bd5f9682de7c7bf5c4c)는 원본 추적·선택 범위 재처리·원천 취소 표시·프로세스 중단 복구까지 검증한 로컬 구현이다. 현재 코드에는 별도로 검증한 Kafka 합성 이벤트·체크포인트·재전달 실험도 포함한다. Apache Kafka 배포 파일, broker 데이터, 로컬 실행 결과는 Git에 포함하지 않는다. 공개 웹 서비스나 운영 환경 배포는 아니다.
 
 프로젝트 코드의 재사용 라이선스는 아직 지정하지 않았다. 데이터의 CC BY 4.0을 코드 전체의 라이선스로 해석하지 않는다.
+
+## 구현·도움·검토 범위
+
+이 저장소용 Python 파이프라인·SQL 모델·loopback 화면과 테스트를 작성했다. DuckDB의 저장·SQL 실행, openpyxl의 Excel 읽기, Apache Kafka 및 confluent-kafka의 메시지 처리는 해당 오픈소스 구현을 의존성으로 사용한다. 이 엔진들을 직접 구현한 프로젝트는 아니다. Metabase와 Databricks의 공식 공개 문서는 결과에서 근거로 내려가기와 실행 상태 탐색의 참고 자료였으며, 해당 제품의 소스나 화면 이미지를 배포물에 포함하지 않는다.
+
+코드·문서 작성과 실험에는 Codex AI의 도움을 받았다. 구현 담당과 검토 담당을 나누고, 검토 담당은 실제 diff·독립 계산·대표 브라우저 동작과 반례를 직접 대조했다. AI 담당 간 검토와 자동 검사는 사람의 코드 검토·사용자 수용·실제 운영 경험을 대신하지 않는다. 사용자의 학습·이해 완료 역시 주장하지 않는다.
+
+공개 범위는 자체 프로젝트 코드·허용된 가공/합성 테스트 자료·실행법과 관찰 한계다. 회사 자료, Personal 작업실, 개인 입력·키·토큰, 원본 Excel, 로컬 DB·실행 산출물, 타사 화면 캡처는 포함하지 않는다. 위 데이터 출처·조건과 의존성의 각 라이선스는 별개이며, 이 프로젝트 코드 자체의 재사용 라이선스는 미지정 상태를 유지한다.
