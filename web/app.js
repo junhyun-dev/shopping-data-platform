@@ -14,8 +14,27 @@ const state = {
   comparisonStableState: "비교할 완료 결과를 읽는 중입니다.",
   comparisonStableRowChanges: null,
   comparisonSelectionNotice: "",
+  comparisonPayload: null,
   currentLookupStableState: "현재 공개 결과를 조회하기 전입니다.",
+  viewDateFilter: {start: "", end: "", error: null},
+  viewProductQueryError: null,
+  viewFocus: null,
+  displayedResultOrigin: null,
+  pendingComparedResultRequest: false,
 };
+
+const VIEW_QUERY_KEYS = new Set([
+  "run_id",
+  "product_query",
+  "date_start",
+  "date_end",
+  "sort",
+  "focus_code",
+  "focus_date",
+]);
+const VIEW_SORTS = new Set(["default", "quantity-desc", "quantity-asc"]);
+const RUN_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const VIEW_TEXT_MAX_LENGTH = 128;
 
 const byId = (id) => document.getElementById(id);
 
@@ -26,6 +45,217 @@ function shortId(value, size = 10) {
 
 function setText(id, value) {
   byId(id).textContent = value;
+}
+
+function isIsoCalendarDate(value) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (!match) return false;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  const days = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  return month >= 1 && month <= 12 && day >= 1 && day <= days[month - 1];
+}
+
+function readViewDateFilter() {
+  const startInput = byId("observedDateStart");
+  const endInput = byId("observedDateEnd");
+  const start = startInput.value.trim();
+  const end = endInput.value.trim();
+  let error = null;
+  if (startInput.validity.badInput || (start && !isIsoCalendarDate(start))) {
+    error = "시작 원문 날짜를 YYYY-MM-DD 형식의 실제 날짜로 입력하세요.";
+  } else if (endInput.validity.badInput || (end && !isIsoCalendarDate(end))) {
+    error = "종료 원문 날짜를 YYYY-MM-DD 형식의 실제 날짜로 입력하세요.";
+  } else if (start && end && start > end) {
+    error = "시작 원문 날짜는 종료 원문 날짜보다 늦을 수 없습니다.";
+  }
+  state.viewDateFilter = {start, end, error};
+  return state.viewDateFilter;
+}
+
+function viewDateFilterSummary(filter = state.viewDateFilter) {
+  if (filter.start && filter.end) {
+    return filter.start === filter.end
+      ? `원문 날짜 ${filter.start} 하루 (양끝 포함)`
+      : `원문 날짜 ${filter.start}~${filter.end} (양끝 포함)`;
+  }
+  if (filter.start) return `원문 날짜 ${filter.start}부터 (시작 포함)`;
+  if (filter.end) return `원문 날짜 ${filter.end}까지 (종료 포함)`;
+  return "전체 원문 날짜";
+}
+
+function observedDateMatchesView(observedDate, filter = state.viewDateFilter) {
+  if (filter.error) return false;
+  const value = String(observedDate);
+  if (filter.start && value < filter.start) return false;
+  if (filter.end && value > filter.end) return false;
+  return true;
+}
+
+function validViewText(value) {
+  return value.length <= VIEW_TEXT_MAX_LENGTH && !/[\u0000-\u001f\u007f]/.test(value);
+}
+
+function productQueryValidationError(value) {
+  if (value.length > VIEW_TEXT_MAX_LENGTH) {
+    return `상품 검색어는 ${VIEW_TEXT_MAX_LENGTH}자 이하여야 합니다.`;
+  }
+  if (/[\u0000-\u001f\u007f]/.test(value)) {
+    return "상품 검색어에는 제어 문자를 사용할 수 없습니다.";
+  }
+  return null;
+}
+
+function parseInitialViewQuery() {
+  const params = new URLSearchParams(window.location.search);
+  const keys = [...params.keys()];
+  if (!keys.length) return {kind: "current"};
+
+  for (const key of keys) {
+    if (!VIEW_QUERY_KEYS.has(key)) {
+      throw new Error(`지원하지 않는 보기 조건입니다: ${key}`);
+    }
+    if (params.getAll(key).length !== 1) {
+      throw new Error(`보기 조건은 한 번만 지정할 수 있습니다: ${key}`);
+    }
+  }
+
+  const runId = params.get("run_id") || "";
+  if (!runId) throw new Error("저장 실행을 다시 열려면 run_id가 필요합니다.");
+  if (!RUN_ID_PATTERN.test(runId)) throw new Error("run_id 형식이 올바르지 않습니다.");
+
+  const productQuerySource = params.get("product_query") || "";
+  const productQuery = productQuerySource.trim();
+  const dateStart = params.get("date_start") || "";
+  const dateEnd = params.get("date_end") || "";
+  const sort = params.get("sort") || "default";
+  const focusCodeValue = params.get("focus_code");
+  const focusDateValue = params.get("focus_date");
+  const hasFocusCode = focusCodeValue !== null;
+  const hasFocusDate = focusDateValue !== null;
+
+  const productQueryError = productQueryValidationError(productQuerySource);
+  if (productQueryError) throw new Error(productQueryError);
+  if (dateStart && !isIsoCalendarDate(dateStart)) {
+    throw new Error("date_start는 YYYY-MM-DD 형식의 실제 날짜여야 합니다.");
+  }
+  if (dateEnd && !isIsoCalendarDate(dateEnd)) {
+    throw new Error("date_end는 YYYY-MM-DD 형식의 실제 날짜여야 합니다.");
+  }
+  if (dateStart && dateEnd && dateStart > dateEnd) {
+    throw new Error("date_start는 date_end보다 늦을 수 없습니다.");
+  }
+  if (!VIEW_SORTS.has(sort)) throw new Error("지원하지 않는 표 보기 순서입니다.");
+  if (hasFocusCode !== hasFocusDate) {
+    throw new Error("focus_code와 focus_date는 함께 지정해야 합니다.");
+  }
+
+  let focus = null;
+  if (hasFocusCode && hasFocusDate) {
+    const stockCode = focusCodeValue.trim();
+    const observedDate = focusDateValue;
+    if (!stockCode || !validViewText(focusCodeValue)) {
+      throw new Error("focus_code가 비었거나 지원하지 않는 문자를 포함합니다.");
+    }
+    if (!isIsoCalendarDate(observedDate)) {
+      throw new Error("focus_date는 YYYY-MM-DD 형식의 실제 날짜여야 합니다.");
+    }
+    if (productQuery && !stockCode.toUpperCase().includes(productQuery.toUpperCase())) {
+      throw new Error("focus_code가 현재 상품 검색 조건에 포함되지 않습니다.");
+    }
+    if ((dateStart && observedDate < dateStart) || (dateEnd && observedDate > dateEnd)) {
+      throw new Error("focus_date가 현재 원문 날짜 범위 밖입니다.");
+    }
+    focus = {stockCode, observedDate};
+  }
+
+  return {
+    kind: "pinned",
+    runId,
+    productQuery,
+    dateStart,
+    dateEnd,
+    sort,
+    focus,
+  };
+}
+
+function focusMatchesCurrentView(focus) {
+  if (!focus || state.viewDateFilter.error || state.viewProductQueryError) return false;
+  const query = byId("productFilter").value.trim().toUpperCase();
+  return focus.stockCode.toUpperCase().includes(query)
+    && observedDateMatchesView(focus.observedDate);
+}
+
+function syncViewUrl() {
+  if (!state.result || state.resultContext || state.viewDateFilter.error || state.viewProductQueryError) return;
+  const params = new URLSearchParams({run_id: state.result.run.run_id});
+  const productQuery = byId("productFilter").value.trim();
+  const sort = byId("productSort").value;
+  if (productQuery) params.set("product_query", productQuery);
+  if (state.viewDateFilter.start) params.set("date_start", state.viewDateFilter.start);
+  if (state.viewDateFilter.end) params.set("date_end", state.viewDateFilter.end);
+  if (sort !== "default") params.set("sort", sort);
+  if (state.viewFocus && focusMatchesCurrentView(state.viewFocus)) {
+    params.set("focus_code", state.viewFocus.stockCode);
+    params.set("focus_date", state.viewFocus.observedDate);
+  }
+  window.history.replaceState(null, "", `${window.location.pathname}?${params}`);
+}
+
+function revealPinnedFocusOnSingleColumn() {
+  const columns = getComputedStyle(document.querySelector(".workspace-grid"))
+    .gridTemplateColumns.trim().split(/\s+/);
+  if (columns.length !== 1) return;
+  byId("detailPanel").scrollIntoView({behavior: "auto", block: "start"});
+}
+
+function applyPinnedViewInputs(view) {
+  byId("productFilter").value = view.productQuery;
+  byId("productSort").value = view.sort;
+  byId("observedDateStart").value = view.dateStart;
+  byId("observedDateEnd").value = view.dateEnd;
+  state.viewDateFilter = {start: view.dateStart, end: view.dateEnd, error: null};
+  state.viewProductQueryError = null;
+  state.viewFocus = view.focus ? {...view.focus} : null;
+}
+
+function renderProductQueryState() {
+  const input = byId("productFilter");
+  const status = byId("productFilterState");
+  input.setAttribute("aria-invalid", String(Boolean(state.viewProductQueryError)));
+  status.hidden = !state.viewProductQueryError;
+  status.textContent = state.viewProductQueryError
+    ? `상품 검색 조건 오류 · ${state.viewProductQueryError} 현재 조건은 결과 없음이나 값 0으로 처리하지 않았으며, 주소에도 반영하지 않았습니다.`
+    : "";
+}
+
+function renderViewDateFilterState() {
+  const bar = byId("dateFilterBar");
+  bar.hidden = !state.result;
+  if (!state.result) return;
+
+  const locked = Boolean(state.resultContext);
+  const startInput = byId("observedDateStart");
+  const endInput = byId("observedDateEnd");
+  const clearButton = byId("clearObservedDateFilter");
+  [startInput, endInput, clearButton].forEach((control) => {
+    control.disabled = locked;
+  });
+  startInput.setAttribute("aria-invalid", String(Boolean(state.viewDateFilter.error)));
+  endInput.setAttribute("aria-invalid", String(Boolean(state.viewDateFilter.error)));
+
+  const status = byId("dateFilterState");
+  status.classList.toggle("is-error", Boolean(state.viewDateFilter.error) && !locked);
+  if (locked) {
+    status.textContent = `${state.resultContext.focus.observedDate} · ${state.resultContext.focus.stockCode}의 저장 근거를 고정 표시합니다. 비교로 돌아가면 ${viewDateFilterSummary()} 조건을 다시 적용합니다.`;
+  } else if (state.viewDateFilter.error) {
+    status.textContent = `날짜 보기 조건 오류 · ${state.viewDateFilter.error} 정상적인 빈 결과나 값 0으로 처리하지 않았으며, 현재 잘못된 조건은 주소에 반영하지 않았습니다.`;
+  } else {
+    status.textContent = `${viewDateFilterSummary()} 보기 · 상품 코드 조건과 함께 적용하며 저장 결과를 재계산하지 않습니다.`;
+  }
 }
 
 function selectedRowRanges(rows) {
@@ -139,6 +369,7 @@ function finishCurrentResultRequest() {
 
 function invalidatePendingResultRequest() {
   state.resultRequestVersion += 1;
+  state.pendingComparedResultRequest = false;
   finishCurrentResultRequest();
 }
 
@@ -157,6 +388,8 @@ function changeComparisonSelection() {
   state.comparisonRequestVersion += 1;
   state.comparisonRowRequestVersion += 1;
   state.comparisonSelectionNotice = "";
+  state.comparisonPayload = null;
+  byId("comparisonFilterEmpty").hidden = true;
   setStableComparisonState(
     "비교 조건이 바뀌었습니다. 변화 확인을 눌러 두 결과를 다시 읽으세요."
   );
@@ -199,6 +432,8 @@ function renderDisplayedResultState() {
     const side = state.resultContext.side === "base" ? "비교의 이전 저장 결과" : "비교의 이후 저장 결과";
     const current = state.resultContext.isCurrent ? " · 조회 당시 현재 공개 결과" : "";
     description = `${side}${current}`;
+  } else if (state.displayedResultOrigin?.kind === "pinned") {
+    description = "주소로 고정해 다시 연 저장 결과";
   } else if (state.currentResult?.run?.run_id === result.run.run_id) {
     description = "마지막으로 읽은 현재 공개 결과";
   }
@@ -206,6 +441,24 @@ function renderDisplayedResultState() {
     "displayedResultState",
     `표시 중 run ${shortId(result.run.run_id)} · ${description}`
   );
+}
+
+function renderDisplayedResultBadge() {
+  const badge = byId("resultBadge");
+  if (state.resultContext) {
+    badge.textContent = state.resultContext.isCurrent
+      ? "비교의 현재 공개 결과"
+      : "지난 실행 읽는 중";
+    badge.className = "status-badge";
+    return;
+  }
+  if (state.displayedResultOrigin?.kind === "pinned") {
+    badge.textContent = "주소로 고정한 저장 결과";
+    badge.className = "status-badge";
+    return;
+  }
+  badge.textContent = "조회 당시 최신 공개 결과";
+  badge.className = "status-badge is-ready";
 }
 
 function renderResultContext() {
@@ -226,9 +479,13 @@ function renderResultContext() {
   );
 }
 
-function clearProductDetail(message = "왼쪽 표의 상품을 누르면 어떤 Excel 행이 숫자에 들어갔는지 확인할 수 있습니다.") {
+function clearProductDetail(
+  message = "왼쪽 표의 상품을 누르면 어떤 Excel 행이 숫자에 들어갔는지 확인할 수 있습니다.",
+  {preserveViewFocus = false} = {}
+) {
   state.selected = null;
   state.selectedMarker = null;
+  if (!preserveViewFocus && !state.resultContext) state.viewFocus = null;
   setText("detailTitle", "상품을 선택하세요");
   setText("detailLocation", "-");
   byId("detailMetrics").hidden = true;
@@ -268,7 +525,15 @@ function showError(payload, status) {
   byId("runsView").hidden = true;
   byId("errorState").hidden = false;
   const missing = payload?.data_state === "not_found";
-  setText("errorTitle", missing ? "아직 공개된 결과가 없습니다." : "결과를 읽지 못했습니다.");
+  const invalidView = payload?.data_state === "invalid_view";
+  setText(
+    "errorTitle",
+    invalidView
+      ? "보기 주소를 열 수 없습니다."
+      : missing
+        ? "저장 실행을 찾을 수 없습니다."
+        : "결과를 읽지 못했습니다."
+  );
   setText("errorMessage", payload?.message || `HTTP ${status}`);
   const badge = byId("resultBadge");
   badge.textContent = missing ? "데이터 없음" : "읽기 실패";
@@ -279,6 +544,9 @@ function renderOverview() {
   const result = state.result;
   renderResultContext();
   renderDisplayedResultState();
+  renderDisplayedResultBadge();
+  renderViewDateFilterState();
+  renderProductQueryState();
   renderSelectedRowsScope(result.source.sheet, result.source.selected_excel_rows);
   setText("dateBasisText", "원문 InvoiceDate의 날짜 부분");
   setText("runText", `${shortId(result.run.run_id)} · ${result.run.completed_at}`);
@@ -393,7 +661,9 @@ function renderProductRows() {
       return item.observed_date === focus.observedDate
         && item.stock_code === focus.stockCode;
     }
-    return item.stock_code.toUpperCase().includes(query);
+    if (state.viewDateFilter.error || state.viewProductQueryError) return false;
+    return item.stock_code.toUpperCase().includes(query)
+      && observedDateMatchesView(item.observed_date);
   });
   if (sort !== "default") {
     products.sort((left, right) => compareProductQuantity(left, right, sort));
@@ -402,17 +672,23 @@ function renderProductRows() {
     ? 0
     : products.filter((product) => sortableProductQuantity(product) === null).length;
   const sortNotice = byId("productSortNotice");
-  sortNotice.hidden = unknownQuantityCount === 0;
+  sortNotice.hidden = unknownQuantityCount === 0
+    || Boolean((state.viewDateFilter.error || state.viewProductQueryError) && !focus);
   sortNotice.textContent = unknownQuantityCount
     ? `정밀 수량을 확인할 수 없는 ${unknownQuantityCount.toLocaleString("ko-KR")}개 결과는 순서를 확정하지 않고, 정확한 값이 있는 결과 뒤에 날짜·상품 코드 순으로 표시합니다.`
     : "";
-  setText(
-    "filterEmpty",
-    focus
-      ? `이 저장 결과에는 ${focus.observedDate} · ${focus.stockCode} 상품 결과가 없습니다. 0으로 계산한 것이 아닙니다.`
-      : "이 표본에 해당 상품이 없습니다. 0으로 계산한 것이 아닙니다."
+  const filterEmpty = byId("filterEmpty");
+  const dateFiltered = state.viewDateFilter.start || state.viewDateFilter.end;
+  filterEmpty.textContent = focus
+    ? `이 저장 결과에는 ${focus.observedDate} · ${focus.stockCode} 상품 결과가 없습니다. 0으로 계산한 것이 아닙니다.`
+    : dateFiltered
+      ? `현재 원문 날짜 보기 조건${query ? "과 상품 코드" : ""}에 맞는 결과가 없습니다. 0으로 계산한 것이 아닙니다.`
+      : "이 표본에 해당 상품이 없습니다. 0으로 계산한 것이 아닙니다.";
+  const viewFilterError = Boolean(
+    (state.viewDateFilter.error || state.viewProductQueryError) && !focus
   );
-  byId("filterEmpty").hidden = products.length > 0;
+  byId("productTable").hidden = viewFilterError;
+  filterEmpty.hidden = viewFilterError || products.length > 0;
 
   products.forEach((product) => {
     const row = document.createElement("tr");
@@ -444,6 +720,12 @@ function renderProductRows() {
 function selectProduct(product) {
   state.selected = product;
   state.selectedMarker = null;
+  if (!state.resultContext) {
+    state.viewFocus = {
+      stockCode: product.stock_code,
+      observedDate: product.observed_date,
+    };
+  }
   renderProductRows();
   setText("detailTitle", product.stock_code);
   setText("detailLocation", product.observed_date);
@@ -454,6 +736,7 @@ function selectProduct(product) {
   byId("detailBody").hidden = false;
   renderContributions(product);
   renderSource(product);
+  if (!state.resultContext) syncViewUrl();
 }
 
 function renderContributions(product) {
@@ -573,6 +856,7 @@ function openContributionComparison(product, row) {
     state.comparisonRowFocus,
     "처리 이력에서 선택한 두 저장 결과를 읽어 이 행의 기여 여부를 확인합니다."
   );
+  if (state.resultContext) restoreResultContextParent();
   switchView("runs", false);
   const hasSelectedPair = byId("baseResult").value && byId("currentResult").value;
   if (state.publishedResults.length >= 2 && hasSelectedPair) {
@@ -982,10 +1266,22 @@ async function renderComparisonRowTrace(comparison, comparisonVersion) {
 async function openComparedResult({side, group, runId}) {
   finishCurrentResultRequest();
   const requestVersion = ++state.resultRequestVersion;
-  const previousComparisonState = {
+  state.pendingComparedResultRequest = true;
+  const existingContext = state.resultContext;
+  const previousComparisonState = existingContext?.comparisonState || {
     value: state.comparisonStableState,
     rowChanges: state.comparisonStableRowChanges,
   };
+  const previousDisplayedResult = existingContext?.previousResult || state.result;
+  const parentOrigin = existingContext?.previousDisplayedResultOrigin || state.displayedResultOrigin;
+  const previousDisplayedResultOrigin = parentOrigin ? {...parentOrigin} : null;
+  const parentFocus = existingContext?.previousViewFocus || state.viewFocus;
+  const previousViewFocus = parentFocus ? {...parentFocus} : null;
+  const previousFilter = existingContext?.previousFilter ?? byId("productFilter").value;
+  const previousSort = existingContext?.previousSort ?? byId("productSort").value;
+  const previousDateFilter = existingContext?.previousDateFilter || state.viewDateFilter;
+  const previousProductQueryError = existingContext?.previousProductQueryError
+    ?? state.viewProductQueryError;
   renderComparisonState(
     `${side === "base" ? "이전" : "이후"} 저장 결과의 근거를 읽는 중입니다.`
   );
@@ -998,6 +1294,7 @@ async function openComparedResult({side, group, runId}) {
     if (payload.result?.run?.run_id !== runId) {
       throw new Error("요청한 실행과 다른 저장 결과가 반환됐습니다.");
     }
+    state.pendingComparedResultRequest = false;
 
     const focus = {
       observedDate: group.observed_date,
@@ -1008,8 +1305,13 @@ async function openComparedResult({side, group, runId}) {
       side,
       isCurrent: Boolean(payload.is_current),
       focus,
-      previousFilter: byId("productFilter").value,
-      previousSort: byId("productSort").value,
+      previousResult: previousDisplayedResult,
+      previousDisplayedResultOrigin,
+      previousViewFocus,
+      previousFilter,
+      previousSort,
+      previousDateFilter: {...previousDateFilter},
+      previousProductQueryError,
       comparisonState: previousComparisonState,
     };
     state.selected = null;
@@ -1033,36 +1335,110 @@ async function openComparedResult({side, group, runId}) {
     badge.className = "status-badge";
   } catch (error) {
     if (requestVersion !== state.resultRequestVersion) return;
+    state.pendingComparedResultRequest = false;
     renderComparisonState(`저장 결과의 근거를 읽지 못했습니다: ${error.message}`);
   }
 }
 
-function returnToComparison() {
+function restoreResultContextParent() {
   const context = state.resultContext;
-  if (!context) return;
+  if (!context) return false;
   invalidatePendingResultRequest();
-  state.result = state.currentResult;
+  state.result = context.previousResult;
+  state.displayedResultOrigin = context.previousDisplayedResultOrigin;
+  state.viewFocus = context.previousViewFocus;
+  state.viewProductQueryError = context.previousProductQueryError;
   state.resultContext = null;
   state.selected = null;
   state.selectedMarker = null;
   byId("productFilter").disabled = false;
   byId("productFilter").value = context.previousFilter;
   byId("productSort").value = context.previousSort;
+  state.viewDateFilter = {...context.previousDateFilter};
+  byId("observedDateStart").value = state.viewDateFilter.start;
+  byId("observedDateEnd").value = state.viewDateFilter.end;
   renderOverview();
-  clearProductDetail();
+  clearProductDetail(undefined, {preserveViewFocus: true});
   setStableComparisonState(
     context.comparisonState.value,
     context.comparisonState.rowChanges
   );
-  const badge = byId("resultBadge");
-  badge.textContent = "선택 행 처리 완료";
-  badge.className = "status-badge is-ready";
+  syncViewUrl();
+  return true;
+}
+
+function returnToComparison() {
+  if (!restoreResultContextParent()) return;
   switchView("runs", false);
+}
+
+function renderComparisonGroups(payload) {
+  const query = byId("comparisonProductFilter").value.trim().toUpperCase();
+  const groups = state.viewDateFilter.error
+    ? []
+    : payload.groups.filter(
+        (group) => group.stock_code.toUpperCase().includes(query)
+          && observedDateMatchesView(group.observed_date)
+      );
+  const body = byId("comparisonRows");
+  body.replaceChildren();
+  const filterEmpty = byId("comparisonFilterEmpty");
+  const dateFiltered = state.viewDateFilter.start || state.viewDateFilter.end;
+  filterEmpty.textContent = dateFiltered
+    ? `현재 원문 날짜 보기 조건${query ? "과 상품 코드" : ""}에 맞는 비교 결과가 없습니다. 값 0이나 비기여를 뜻하지 않습니다.`
+    : "이 비교 결과에는 해당 상품 코드가 없습니다. 값 0이나 비기여를 뜻하지 않습니다.";
+  filterEmpty.hidden = Boolean(state.viewDateFilter.error) || groups.length > 0;
+
+  groups.forEach((group) => {
+    const row = document.createElement("tr");
+    if (group.changed) row.classList.add("is-changed");
+    const basisNeedsReview = payload.change_basis.source_file_changed
+      || payload.change_basis.sheet_changed
+      || payload.change_basis.aggregation_rule_changed
+      || payload.change_basis.transformation_rule_changed
+      || payload.change_basis.transformation_rule_unrecorded;
+    if (!group.changed && basisNeedsReview) row.classList.add("needs-review");
+    [group.observed_date, group.stock_code].forEach((value) => {
+      const cell = document.createElement("td");
+      cell.textContent = value;
+      row.appendChild(cell);
+    });
+    row.appendChild(comparisonMetricCell({
+      side: "base",
+      group,
+      runId: payload.base_run_id,
+    }));
+    row.appendChild(comparisonMetricCell({
+      side: "current",
+      group,
+      runId: payload.current_run_id,
+    }));
+    const changeCell = document.createElement("td");
+    const changes = [
+      ...locationText("+", group.added_source_rows),
+      ...locationText("−", group.removed_source_rows),
+    ];
+    changeCell.className = "comparison-detail";
+    appendComparisonLine(changeCell, valueChangeText(group), "comparison-value-state");
+    appendComparisonLine(
+      changeCell,
+      changes.length ? `원본 위치: ${changes.join(" · ")}` : "원본 위치: 같음"
+    );
+    appendComparisonLine(
+      changeCell,
+      evidenceText(group, payload.change_basis),
+      "comparison-next-evidence"
+    );
+    row.appendChild(changeCell);
+    body.appendChild(row);
+  });
 }
 
 async function renderComparison() {
   invalidatePendingResultRequest();
   const requestVersion = ++state.comparisonRequestVersion;
+  state.comparisonPayload = null;
+  byId("comparisonFilterEmpty").hidden = true;
   const baseRunId = byId("baseResult").value;
   const currentRunId = byId("currentResult").value;
   if (!baseRunId || !currentRunId) {
@@ -1091,56 +1467,14 @@ async function renderComparison() {
         }
       : null;
     setStableComparisonState(comparisonState, rowChanges);
-
-    const body = byId("comparisonRows");
-    body.replaceChildren();
-    payload.groups.forEach((group) => {
-      const row = document.createElement("tr");
-      if (group.changed) row.classList.add("is-changed");
-      const basisNeedsReview = payload.change_basis.source_file_changed
-        || payload.change_basis.sheet_changed
-        || payload.change_basis.aggregation_rule_changed
-        || payload.change_basis.transformation_rule_changed
-        || payload.change_basis.transformation_rule_unrecorded;
-      if (!group.changed && basisNeedsReview) row.classList.add("needs-review");
-      [group.observed_date, group.stock_code].forEach((value) => {
-        const cell = document.createElement("td");
-        cell.textContent = value;
-        row.appendChild(cell);
-      });
-      row.appendChild(comparisonMetricCell({
-        side: "base",
-        group,
-        runId: payload.base_run_id,
-      }));
-      row.appendChild(comparisonMetricCell({
-        side: "current",
-        group,
-        runId: payload.current_run_id,
-      }));
-      const changeCell = document.createElement("td");
-      const changes = [
-        ...locationText("+", group.added_source_rows),
-        ...locationText("−", group.removed_source_rows),
-      ];
-      changeCell.className = "comparison-detail";
-      appendComparisonLine(changeCell, valueChangeText(group), "comparison-value-state");
-      appendComparisonLine(
-        changeCell,
-        changes.length ? `원본 위치: ${changes.join(" · ")}` : "원본 위치: 같음"
-      );
-      appendComparisonLine(
-        changeCell,
-        evidenceText(group, payload.change_basis),
-        "comparison-next-evidence"
-      );
-      row.appendChild(changeCell);
-      body.appendChild(row);
-    });
+    state.comparisonPayload = payload;
+    renderComparisonGroups(payload);
     byId("comparisonTable").hidden = false;
     renderComparisonRowTrace(payload, requestVersion);
   } catch (error) {
     if (requestVersion !== state.comparisonRequestVersion) return;
+    state.comparisonPayload = null;
+    byId("comparisonFilterEmpty").hidden = true;
     renderComparisonState(`결과 비교를 읽지 못했습니다: ${error.message}`);
   }
 }
@@ -1198,6 +1532,8 @@ async function renderRuns() {
           "이 행을 비교하려면 성공해 공개된 결과가 두 개 이상 필요합니다."
         );
       }
+      state.comparisonPayload = null;
+      byId("comparisonFilterEmpty").hidden = true;
       byId("comparisonTable").hidden = true;
     }
   } catch (error) {
@@ -1208,13 +1544,17 @@ async function renderRuns() {
     cell.textContent = `처리 이력을 읽지 못했습니다: ${error.message}`;
     row.appendChild(cell);
     body.appendChild(row);
+    state.comparisonPayload = null;
+    byId("comparisonFilterEmpty").hidden = true;
     setStableComparisonState(`완료 결과를 읽지 못했습니다: ${error.message}`);
     byId("comparisonTable").hidden = true;
   }
 }
 
 function switchView(name, refreshRuns = true, userInitiated = false) {
-  if (userInitiated) leavePendingResultContext();
+  if (userInitiated) {
+    if (!restoreResultContextParent()) leavePendingResultContext();
+  }
   state.currentView = name;
   document.querySelectorAll(".nav-button").forEach((button) => {
     button.classList.toggle("is-active", button.dataset.view === name);
@@ -1238,13 +1578,16 @@ function switchTab(name) {
 
 async function loadCurrentResult({initial = false} = {}) {
   const requestVersion = ++state.resultRequestVersion;
+  state.pendingComparedResultRequest = false;
   const refreshButton = byId("refreshCurrentResult");
-  const previousFocus = state.selected
-    ? {
-        observedDate: state.selected.observed_date,
-        stockCode: state.selected.stock_code,
-      }
-    : state.resultContext?.focus || null;
+  const previousFocus = state.viewFocus
+    ? {...state.viewFocus}
+    : state.selected
+      ? {
+          observedDate: state.selected.observed_date,
+          stockCode: state.selected.stock_code,
+        }
+      : state.resultContext?.focus || null;
   if (!initial) {
     refreshButton.disabled = true;
     refreshButton.textContent = "최신 결과 확인 중";
@@ -1260,6 +1603,7 @@ async function loadCurrentResult({initial = false} = {}) {
     state.currentResult = payload;
     state.result = payload;
     state.resultContext = null;
+    state.displayedResultOrigin = {kind: "current"};
     state.selected = null;
     state.selectedMarker = null;
     byId("productFilter").disabled = false;
@@ -1274,10 +1618,13 @@ async function loadCurrentResult({initial = false} = {}) {
         (item) => item.observed_date === previousFocus.observedDate
           && item.stock_code === previousFocus.stockCode
       );
-      if (product) {
+      if (product && observedDateMatchesView(product.observed_date)) {
         selectProduct(product);
+      } else if (product) {
+        clearProductDetail("새로 읽은 현재 결과에는 이전에 보던 상품·날짜가 있지만 현재 원문 날짜 보기 조건 밖입니다.");
       } else {
-        clearProductDetail("새로 읽은 현재 결과에는 이전에 보던 상품·날짜가 없습니다. 0으로 계산한 뜻은 아닙니다.");
+        state.viewFocus = {...previousFocus};
+        showMissingComparedProduct(previousFocus);
       }
     } else {
       clearProductDetail();
@@ -1286,6 +1633,7 @@ async function loadCurrentResult({initial = false} = {}) {
     setCurrentLookupState(
       `마지막 현재 결과 조회 run ${shortId(payload.run.run_id)} · ${initial ? "처음 연" : "다시 읽은"} 시점 기준`
     );
+    syncViewUrl();
   } catch (error) {
     if (requestVersion !== state.resultRequestVersion) return;
     if (initial) {
@@ -1303,18 +1651,174 @@ async function loadCurrentResult({initial = false} = {}) {
   }
 }
 
+async function loadPinnedResult(view) {
+  const requestVersion = ++state.resultRequestVersion;
+  state.pendingComparedResultRequest = false;
+  const refreshButton = byId("refreshCurrentResult");
+  refreshButton.disabled = true;
+  refreshButton.textContent = "저장 실행 확인 중";
+  setCurrentLookupState(
+    `현재 공개 결과는 조회하지 않았습니다. 주소의 run ${shortId(view.runId)}을 확인하는 중입니다.`
+  );
+  try {
+    const query = new URLSearchParams({run_id: view.runId});
+    const response = await fetch(`/api/result?${query}`, {cache: "no-store"});
+    const payload = await response.json();
+    if (!response.ok) {
+      const error = new Error(payload.message || `HTTP ${response.status}`);
+      error.payload = payload;
+      error.status = response.status;
+      throw error;
+    }
+    if (requestVersion !== state.resultRequestVersion) return;
+    if (payload.result?.run?.run_id !== view.runId) {
+      throw new Error("요청한 실행과 다른 저장 결과가 반환됐습니다.");
+    }
+
+    state.result = payload.result;
+    state.currentResult = null;
+    state.resultContext = null;
+    state.displayedResultOrigin = {
+      kind: "pinned",
+      isCurrentAtRead: Boolean(payload.is_current),
+    };
+    state.selected = null;
+    state.selectedMarker = null;
+    byId("productFilter").disabled = false;
+    byId("loadingState").hidden = true;
+    byId("errorState").hidden = true;
+    renderOverview();
+    let focusProduct = null;
+    if (view.focus) {
+      const product = payload.result.products.find(
+        (item) => item.observed_date === view.focus.observedDate
+          && item.stock_code === view.focus.stockCode
+      );
+      if (product) {
+        focusProduct = product;
+        selectProduct(product);
+      } else {
+        state.viewFocus = {...view.focus};
+        showMissingComparedProduct(view.focus);
+      }
+    } else {
+      clearProductDetail();
+    }
+    switchView("overview", false);
+    setCurrentLookupState(
+      `현재 공개 결과는 아직 조회하지 않았습니다. 주소의 저장 run ${shortId(view.runId)}을 고정 표시합니다.`
+    );
+    syncViewUrl();
+    if (focusProduct) revealPinnedFocusOnSingleColumn();
+  } catch (error) {
+    if (requestVersion !== state.resultRequestVersion) return;
+    state.result = null;
+    state.displayedResultOrigin = null;
+    setCurrentLookupState(
+      `현재 공개 결과는 조회하지 않았습니다. 주소의 저장 run ${shortId(view.runId)}을 열지 못했습니다.`
+    );
+    showError(
+      error.payload || {data_state: "read_error", message: error.message},
+      error.status || 0
+    );
+    renderDisplayedResultState();
+  } finally {
+    if (requestVersion === state.resultRequestVersion) finishCurrentResultRequest();
+  }
+}
+
+function initializeView() {
+  let initialView;
+  try {
+    initialView = parseInitialViewQuery();
+  } catch (error) {
+    setCurrentLookupState("현재 공개 결과는 조회하지 않았습니다. 보기 주소의 조건을 확인하세요.");
+    showError({data_state: "invalid_view", message: error.message}, 0);
+    renderDisplayedResultState();
+    finishCurrentResultRequest();
+    return;
+  }
+
+  if (initialView.kind === "current") {
+    readViewDateFilter();
+    loadCurrentResult({initial: true});
+    return;
+  }
+  applyPinnedViewInputs(initialView);
+  loadPinnedResult(initialView);
+}
+
+function applyViewDateFilter() {
+  if (state.resultContext) return;
+  const wasReadingComparedResult = state.pendingComparedResultRequest;
+  invalidatePendingResultRequest();
+  if (wasReadingComparedResult) {
+    renderComparisonState(
+      state.comparisonStableState,
+      state.comparisonStableRowChanges
+    );
+  }
+  readViewDateFilter();
+  renderViewDateFilterState();
+  if (state.viewFocus && (
+    state.viewDateFilter.error
+    || !observedDateMatchesView(state.viewFocus.observedDate)
+  )) {
+    clearProductDetail(
+      state.viewDateFilter.error
+        ? "날짜 보기 조건을 고치면 상품 근거를 다시 선택할 수 있습니다."
+        : "선택했던 상품·날짜는 현재 원문 날짜 보기 조건 밖입니다. 0이나 데이터 삭제를 뜻하지 않습니다."
+    );
+  }
+  if (state.result) renderProductRows();
+  if (state.comparisonPayload) renderComparisonGroups(state.comparisonPayload);
+  syncViewUrl();
+}
+
+function applyProductQuery() {
+  if (state.resultContext) return;
+  state.viewProductQueryError = productQueryValidationError(
+    byId("productFilter").value
+  );
+  renderProductQueryState();
+  if (state.viewFocus && !focusMatchesCurrentView(state.viewFocus)) {
+    clearProductDetail(
+      state.viewProductQueryError
+        ? "상품 검색 조건을 고치면 상품 근거를 다시 선택할 수 있습니다."
+        : "선택했던 상품·날짜는 현재 상품 검색 조건 밖입니다. 0이나 데이터 삭제를 뜻하지 않습니다."
+    );
+  }
+  if (state.result) renderProductRows();
+  syncViewUrl();
+}
+
+function applyProductSort() {
+  if (state.result) renderProductRows();
+  syncViewUrl();
+}
+
 document.querySelectorAll(".nav-button").forEach((button) => {
   button.addEventListener("click", () => switchView(button.dataset.view, true, true));
 });
 document.querySelectorAll(".tab").forEach((button) => {
   button.addEventListener("click", () => switchTab(button.dataset.tab));
 });
-byId("productFilter").addEventListener("input", renderProductRows);
-byId("productSort").addEventListener("change", renderProductRows);
+byId("productFilter").addEventListener("input", applyProductQuery);
+byId("productSort").addEventListener("change", applyProductSort);
 byId("baseResult").addEventListener("change", changeComparisonSelection);
 byId("currentResult").addEventListener("change", changeComparisonSelection);
+byId("comparisonProductFilter").addEventListener("input", () => {
+  if (state.comparisonPayload) renderComparisonGroups(state.comparisonPayload);
+});
+byId("observedDateStart").addEventListener("input", applyViewDateFilter);
+byId("observedDateEnd").addEventListener("input", applyViewDateFilter);
+byId("clearObservedDateFilter").addEventListener("click", () => {
+  byId("observedDateStart").value = "";
+  byId("observedDateEnd").value = "";
+  applyViewDateFilter();
+});
 byId("compareButton").addEventListener("click", renderComparison);
 byId("backToComparison").addEventListener("click", returnToComparison);
 byId("refreshCurrentResult").addEventListener("click", () => loadCurrentResult());
 
-loadCurrentResult({initial: true});
+initializeView();

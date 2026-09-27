@@ -48,6 +48,25 @@
         <code>python -m shopping_data run</code>
       </section>
 
+      <section id="dateFilterBar" class="date-filter-bar" hidden aria-labelledby="dateFilterTitle">
+        <div class="date-filter-copy">
+          <strong id="dateFilterTitle">원문 날짜 보기 조건</strong>
+          <span>저장된 일별 결과의 원문 날짜만 걸러 봅니다. 실행 처리 시각이나 원판매일을 바꾸지 않습니다.</span>
+        </div>
+        <div class="date-filter-controls">
+          <label class="filter-label">
+            <span>시작 · YYYY-MM-DD</span>
+            <input id="observedDateStart" type="date" autocomplete="off">
+          </label>
+          <label class="filter-label">
+            <span>종료 · YYYY-MM-DD</span>
+            <input id="observedDateEnd" type="date" autocomplete="off">
+          </label>
+          <button id="clearObservedDateFilter" type="button">기간 초기화</button>
+        </div>
+        <p id="dateFilterState" class="date-filter-state" aria-live="polite">전체 원문 날짜를 보고 있습니다.</p>
+      </section>
+
       <section id="overviewView" class="view" hidden>
         <div id="resultContext" class="result-context" hidden aria-live="polite">
           <div>
@@ -84,6 +103,7 @@
                 </label>
               </div>
             </div>
+            <p id="productFilterState" class="sort-notice is-error" hidden aria-live="polite"></p>
             <p id="productSortNotice" class="sort-notice" hidden></p>
             <div class="table-wrap">
               <table id="productTable">
@@ -163,6 +183,7 @@
             <div class="comparison-controls">
               <label><span>이전 결과</span><select id="baseResult"></select></label>
               <label><span>현재 결과</span><select id="currentResult"></select></label>
+              <label><span>상품 코드 찾기</span><input id="comparisonProductFilter" type="search" placeholder="예: 35004C" autocomplete="off"></label>
               <button id="compareButton" type="button">변화 확인</button>
             </div>
           </div>
@@ -188,6 +209,7 @@
               </thead>
               <tbody id="comparisonRows"></tbody>
             </table>
+            <p id="comparisonFilterEmpty" class="inline-empty" hidden>이 비교 결과에는 해당 상품 코드가 없습니다. 값 0이나 비기여를 뜻하지 않습니다.</p>
           </div>
         </section>
       </section>

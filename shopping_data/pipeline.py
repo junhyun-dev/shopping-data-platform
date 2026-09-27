@@ -36,6 +36,74 @@ EXPECTED_HEADERS = (
 
 UCI_DATASET_URL = "https://archive.ics.uci.edu/dataset/352/online+retail"
 
+_SOURCE_STAGE_COLUMNS = (
+    "source_file_id",
+    "sheet_name",
+    "source_row_number",
+    "invoice_no_raw",
+    "invoice_no_source_kind",
+    "stock_code_raw",
+    "description_raw",
+    "quantity_raw",
+    "invoice_date_raw",
+    "unit_price_raw",
+    "customer_id_raw",
+    "country_raw",
+    "loaded_at",
+)
+_SOURCE_ROW_INPUT_COLUMNS = (
+    "source_row_number",
+    "invoice_no_raw",
+    "invoice_no_source_kind",
+    "stock_code_raw",
+    "description_raw",
+    "quantity_raw",
+    "invoice_date_raw",
+    "unit_price_raw",
+    "customer_id_raw",
+    "country_raw",
+)
+_SOURCE_STAGE_ITEM_TYPES = {
+    "source_file_id": "VARCHAR",
+    "sheet_name": "VARCHAR",
+    "source_row_number": "BIGINT",
+    "invoice_no_raw": "VARCHAR",
+    "invoice_no_source_kind": "VARCHAR",
+    "stock_code_raw": "VARCHAR",
+    "description_raw": "VARCHAR",
+    "quantity_raw": "VARCHAR",
+    "invoice_date_raw": "VARCHAR",
+    "unit_price_raw": "VARCHAR",
+    "customer_id_raw": "VARCHAR",
+    "country_raw": "VARCHAR",
+    "loaded_at": "VARCHAR",
+}
+_SOURCE_STAGE_ITEM_STRUCTURE = json.dumps(
+    _SOURCE_STAGE_ITEM_TYPES,
+    separators=(",", ":"),
+)
+_SOURCE_STAGE_EXPECTED_KEYS_SQL = "[" + ",".join(
+    f"'{column}'" for column in sorted(_SOURCE_STAGE_COLUMNS)
+) + "]"
+_SOURCE_STAGE_REQUIRED_TEXT_COLUMNS = (
+    "source_file_id",
+    "sheet_name",
+    "invoice_no_source_kind",
+    "loaded_at",
+)
+_SOURCE_STAGE_NULLABLE_TEXT_COLUMNS = tuple(
+    column
+    for column in _SOURCE_STAGE_COLUMNS
+    if column
+    not in {
+        "source_file_id",
+        "sheet_name",
+        "source_row_number",
+        "invoice_no_source_kind",
+        "loaded_at",
+    }
+)
+
 
 class PipelineFailure(RuntimeError):
     """The input could not produce a publishable result."""
@@ -253,6 +321,292 @@ def read_selected_rows(
         return [found[row_number] for row_number in selected_rows]
     finally:
         workbook.close()
+
+
+def _build_source_stage_payload(
+    *,
+    source_file_id: str,
+    sheet_name: str,
+    rows: list[dict[str, str | int | None]],
+    selected_rows: list[int],
+    loaded_at: datetime,
+) -> str:
+    if len(rows) != len(selected_rows):
+        raise PipelineFailure(
+            "source payload row count mismatch before encoding: "
+            f"expected {len(selected_rows)}, got {len(rows)}"
+        )
+
+    records: list[dict[str, Any]] = []
+    for index, (row, expected_row_number) in enumerate(
+        zip(rows, selected_rows, strict=True)
+    ):
+        if set(row) != set(_SOURCE_ROW_INPUT_COLUMNS):
+            raise PipelineFailure(
+                f"source payload row {index} does not have the exact input fields"
+            )
+        if row["source_row_number"] != expected_row_number:
+            raise PipelineFailure(
+                "source payload locations do not match the selected Excel rows"
+            )
+        records.append(
+            {
+                "source_file_id": source_file_id,
+                "sheet_name": sheet_name,
+                "source_row_number": row["source_row_number"],
+                "invoice_no_raw": row["invoice_no_raw"],
+                "invoice_no_source_kind": row["invoice_no_source_kind"],
+                "stock_code_raw": row["stock_code_raw"],
+                "description_raw": row["description_raw"],
+                "quantity_raw": row["quantity_raw"],
+                "invoice_date_raw": row["invoice_date_raw"],
+                "unit_price_raw": row["unit_price_raw"],
+                "customer_id_raw": row["customer_id_raw"],
+                "country_raw": row["country_raw"],
+                "loaded_at": loaded_at.isoformat(),
+            }
+        )
+    try:
+        return json.dumps(
+            records,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+    except (TypeError, ValueError) as exc:
+        raise PipelineFailure(f"source payload could not be encoded: {exc}") from exc
+
+
+def _stage_source_rows_from_json(
+    connection: duckdb.DuckDBPyConnection,
+    *,
+    payload: str,
+    source_file_id: str,
+    sheet_name: str,
+    selected_rows: list[int],
+) -> None:
+    """Validate one internal JSON value and materialize a typed TEMP stage."""
+
+    try:
+        connection.execute(
+            """
+            CREATE OR REPLACE TEMP TABLE pipeline_source_payload AS
+            SELECT ?::JSON AS document
+            """,
+            [payload],
+        )
+        document_type, actual_count = connection.execute(
+            """
+            SELECT json_type(document),
+                   CASE WHEN json_type(document) = 'ARRAY'
+                        THEN json_array_length(document) ELSE NULL END
+            FROM pipeline_source_payload
+            """
+        ).fetchone()
+        if document_type != "ARRAY":
+            raise PipelineFailure(
+                f"source payload must be a JSON array, got {document_type}"
+            )
+        if actual_count != len(selected_rows):
+            raise PipelineFailure(
+                "source payload row count mismatch: "
+                f"expected {len(selected_rows)}, got {actual_count}"
+            )
+
+        connection.execute(
+            """
+            CREATE OR REPLACE TEMP TABLE pipeline_source_items AS
+            SELECT CAST(key AS BIGINT) AS ordinal, value
+            FROM json_each((SELECT document FROM pipeline_source_payload))
+            ORDER BY CAST(key AS BIGINT)
+            """
+        )
+
+        object_errors = connection.execute(
+            """
+            SELECT COUNT(*)
+            FROM pipeline_source_items
+            WHERE json_type(value) <> 'OBJECT'
+            """
+        ).fetchone()[0]
+        if object_errors:
+            raise PipelineFailure(
+                f"source payload contains {object_errors} non-object rows"
+            )
+
+        key_errors = connection.execute(
+            f"""
+            SELECT COUNT(*)
+            FROM pipeline_source_items
+            WHERE list_sort(json_keys(value)) <> {_SOURCE_STAGE_EXPECTED_KEYS_SQL}
+            """
+        ).fetchone()[0]
+        if key_errors:
+            raise PipelineFailure(
+                "source payload contains "
+                f"{key_errors} rows with missing or extra fields"
+            )
+
+        required_type_checks = " OR ".join(
+            f"json_type(value, '$.{column}') <> 'VARCHAR'"
+            for column in _SOURCE_STAGE_REQUIRED_TEXT_COLUMNS
+        )
+        nullable_type_checks = " OR ".join(
+            f"json_type(value, '$.{column}') NOT IN ('VARCHAR', 'NULL')"
+            for column in _SOURCE_STAGE_NULLABLE_TEXT_COLUMNS
+        )
+        type_errors = connection.execute(
+            f"""
+            SELECT COUNT(*)
+            FROM pipeline_source_items
+            WHERE {required_type_checks}
+               OR json_type(value, '$.source_row_number')
+                  NOT IN ('BIGINT', 'UBIGINT')
+               OR {nullable_type_checks}
+            """
+        ).fetchone()[0]
+        if type_errors:
+            raise PipelineFailure(
+                f"source payload contains {type_errors} rows with invalid field types"
+            )
+
+        connection.execute(
+            """
+            CREATE OR REPLACE TEMP TABLE pipeline_source_stage AS
+            WITH parsed AS (
+                SELECT ordinal, from_json_strict(value, ?) AS item
+                FROM pipeline_source_items
+            )
+            SELECT
+                item.source_file_id,
+                item.sheet_name,
+                item.source_row_number,
+                item.invoice_no_raw,
+                item.invoice_no_source_kind,
+                item.stock_code_raw,
+                item.description_raw,
+                item.quantity_raw,
+                item.invoice_date_raw,
+                item.unit_price_raw,
+                item.customer_id_raw,
+                item.country_raw,
+                CAST(item.loaded_at AS TIMESTAMPTZ) AS loaded_at
+            FROM parsed
+            ORDER BY ordinal
+            """,
+            [_SOURCE_STAGE_ITEM_STRUCTURE],
+        )
+    except duckdb.Error as exc:
+        raise PipelineFailure(f"source payload could not be staged: {exc}") from exc
+
+    actual_locations = connection.execute(
+        """
+        SELECT source_file_id, sheet_name, source_row_number
+        FROM pipeline_source_stage
+        ORDER BY source_row_number
+        """
+    ).fetchall()
+    expected_locations = [
+        (source_file_id, sheet_name, row_number) for row_number in selected_rows
+    ]
+    if actual_locations != expected_locations:
+        raise PipelineFailure(
+            "staged source locations do not match the selected file, sheet, and rows"
+        )
+
+
+def _persist_staged_source_rows(
+    connection: duckdb.DuckDBPyConnection,
+    *,
+    run_id: str,
+) -> None:
+    connection.execute(
+        """
+        INSERT OR IGNORE INTO source_rows (
+            source_file_id, sheet_name, source_row_number,
+            invoice_no_raw, invoice_no_source_kind,
+            stock_code_raw, description_raw, quantity_raw,
+            invoice_date_raw, unit_price_raw, customer_id_raw,
+            country_raw, loaded_at
+        )
+        SELECT source_file_id, sheet_name, source_row_number,
+               invoice_no_raw, invoice_no_source_kind,
+               stock_code_raw, description_raw, quantity_raw,
+               invoice_date_raw, unit_price_raw, customer_id_raw,
+               country_raw, loaded_at
+        FROM pipeline_source_stage
+        """
+    )
+    connection.execute(
+        """
+        UPDATE source_rows AS target
+        SET invoice_no_source_kind = COALESCE(
+            target.invoice_no_source_kind, stage.invoice_no_source_kind
+        )
+        FROM pipeline_source_stage AS stage
+        WHERE target.source_file_id = stage.source_file_id
+          AND target.sheet_name = stage.sheet_name
+          AND target.source_row_number = stage.source_row_number
+        """
+    )
+    connection.execute(
+        """
+        INSERT INTO run_input_rows (
+            run_id, source_file_id, sheet_name, source_row_number
+        )
+        SELECT ?, source_file_id, sheet_name, source_row_number
+        FROM pipeline_source_stage
+        """,
+        [run_id],
+    )
+
+    staged_locations = connection.execute(
+        """
+        SELECT source_file_id, sheet_name, source_row_number
+        FROM pipeline_source_stage
+        ORDER BY source_file_id, sheet_name, source_row_number
+        """
+    ).fetchall()
+    membership_locations = connection.execute(
+        """
+        SELECT source_file_id, sheet_name, source_row_number
+        FROM run_input_rows
+        WHERE run_id = ?
+        ORDER BY source_file_id, sheet_name, source_row_number
+        """,
+        [run_id],
+    ).fetchall()
+    if membership_locations != staged_locations:
+        raise PipelineFailure(
+            "run input membership does not match the staged source locations"
+        )
+
+
+def _load_source_rows_and_membership(
+    connection: duckdb.DuckDBPyConnection,
+    *,
+    run_id: str,
+    source_file_id: str,
+    sheet_name: str,
+    rows: list[dict[str, str | int | None]],
+    selected_rows: list[int],
+    loaded_at: datetime,
+) -> None:
+    payload = _build_source_stage_payload(
+        source_file_id=source_file_id,
+        sheet_name=sheet_name,
+        rows=rows,
+        selected_rows=selected_rows,
+        loaded_at=loaded_at,
+    )
+    _stage_source_rows_from_json(
+        connection,
+        payload=payload,
+        source_file_id=source_file_id,
+        sheet_name=sheet_name,
+        selected_rows=selected_rows,
+    )
+    _persist_staged_source_rows(connection, run_id=run_id)
 
 
 def initialize_database(connection: duckdb.DuckDBPyConnection) -> None:
@@ -780,68 +1134,14 @@ def run_pipeline(
                     loaded_at,
                 ],
             )
-            connection.executemany(
-                """
-                INSERT OR IGNORE INTO source_rows
-                    (source_file_id, sheet_name, source_row_number,
-                     invoice_no_raw, invoice_no_source_kind,
-                     stock_code_raw, description_raw,
-                     quantity_raw, invoice_date_raw, unit_price_raw,
-                     customer_id_raw, country_raw, loaded_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                [
-                    [
-                        source_file_id,
-                        manifest["sheet"],
-                        row["source_row_number"],
-                        row["invoice_no_raw"],
-                        row["invoice_no_source_kind"],
-                        row["stock_code_raw"],
-                        row["description_raw"],
-                        row["quantity_raw"],
-                        row["invoice_date_raw"],
-                        row["unit_price_raw"],
-                        row["customer_id_raw"],
-                        row["country_raw"],
-                        loaded_at,
-                    ]
-                    for row in rows
-                ],
-            )
-            connection.executemany(
-                """
-                UPDATE source_rows
-                SET invoice_no_source_kind = COALESCE(invoice_no_source_kind, ?)
-                WHERE source_file_id = ?
-                  AND sheet_name = ?
-                  AND source_row_number = ?
-                """,
-                [
-                    [
-                        row["invoice_no_source_kind"],
-                        source_file_id,
-                        manifest["sheet"],
-                        row["source_row_number"],
-                    ]
-                    for row in rows
-                ],
-            )
-            connection.executemany(
-                """
-                INSERT INTO run_input_rows
-                    (run_id, source_file_id, sheet_name, source_row_number)
-                VALUES (?, ?, ?, ?)
-                """,
-                [
-                    [
-                        run_id,
-                        source_file_id,
-                        manifest["sheet"],
-                        row_number,
-                    ]
-                    for row_number in selected_rows
-                ],
+            _load_source_rows_and_membership(
+                connection,
+                run_id=run_id,
+                source_file_id=source_file_id,
+                sheet_name=manifest["sheet"],
+                rows=rows,
+                selected_rows=selected_rows,
+                loaded_at=loaded_at,
             )
             _validate_typed_rows(connection, run_id, len(selected_rows))
             _invoke_process_checkpoint(

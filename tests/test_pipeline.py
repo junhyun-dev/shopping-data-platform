@@ -118,6 +118,29 @@ def local_paths(tmp_path: Path, selected_rows: list[int] | None = None):
     return workbook, manifest, database, published
 
 
+def source_stage_record(
+    *,
+    row_number: int,
+    quantity_raw: object = "1",
+    invoice_no_source_kind: object = "text",
+) -> dict[str, object]:
+    return {
+        "source_file_id": "file-sha",
+        "sheet_name": "Online Retail",
+        "source_row_number": row_number,
+        "invoice_no_raw": None,
+        "invoice_no_source_kind": invoice_no_source_kind,
+        "stock_code_raw": '상품-\\"A',
+        "description_raw": '한글, 따옴표 ", 역슬래시 \\\\, 줄바꿈\n탭\t',
+        "quantity_raw": quantity_raw,
+        "invoice_date_raw": "2010-12-01 08:26:00",
+        "unit_price_raw": "0001.234567890123456789",
+        "customer_id_raw": "null",
+        "country_raw": "",
+        "loaded_at": "2026-09-26T12:34:56+00:00",
+    }
+
+
 def start_crash_worker(
     *,
     workbook: Path,
@@ -181,6 +204,355 @@ def kill_owned_worker(process: subprocess.Popen[str]) -> None:
 
 def product(result: dict, stock_code: str) -> dict:
     return next(item for item in result["products"] if item["stock_code"] == stock_code)
+
+
+def test_json_source_stage_preserves_raw_text_and_rejects_invalid_shape() -> None:
+    record = source_stage_record(
+        row_number=2,
+        quantity_raw="9007199254740993123456789",
+    )
+    connection = duckdb.connect(":memory:")
+    try:
+        pipeline_module._stage_source_rows_from_json(
+            connection,
+            payload=json.dumps([record], ensure_ascii=False),
+            source_file_id="file-sha",
+            sheet_name="Online Retail",
+            selected_rows=[2],
+        )
+        preserved = connection.execute(
+            """
+            SELECT invoice_no_raw, stock_code_raw, description_raw, quantity_raw,
+                   invoice_date_raw, unit_price_raw, customer_id_raw, country_raw
+            FROM pipeline_source_stage
+            """
+        ).fetchone()
+        assert preserved == (
+            record["invoice_no_raw"],
+            record["stock_code_raw"],
+            record["description_raw"],
+            record["quantity_raw"],
+            record["invoice_date_raw"],
+            record["unit_price_raw"],
+            record["customer_id_raw"],
+            record["country_raw"],
+        )
+    finally:
+        connection.close()
+
+    missing = dict(record)
+    missing.pop("country_raw")
+    extra = dict(record, unexpected="x")
+    numeric_raw = dict(record, quantity_raw=7)
+    replaced_location = dict(record, source_row_number=99)
+    cases = [
+        ([missing], [2], "missing or extra fields"),
+        ([extra], [2], "missing or extra fields"),
+        ([numeric_raw], [2], "invalid field types"),
+        ([record], [2, 3], "row count mismatch"),
+        ([replaced_location], [2], "staged source locations"),
+    ]
+    for records, selected_rows, message in cases:
+        invalid_connection = duckdb.connect(":memory:")
+        try:
+            with pytest.raises(PipelineFailure, match=message):
+                pipeline_module._stage_source_rows_from_json(
+                    invalid_connection,
+                    payload=json.dumps(records, ensure_ascii=False),
+                    source_file_id="file-sha",
+                    sheet_name="Online Retail",
+                    selected_rows=selected_rows,
+                )
+        finally:
+            invalid_connection.close()
+
+    for payload, message in [
+        (json.dumps({"row": record}, ensure_ascii=False), "must be a JSON array"),
+        ("not-json", "could not be staged"),
+    ]:
+        invalid_connection = duckdb.connect(":memory:")
+        try:
+            with pytest.raises(PipelineFailure, match=message):
+                pipeline_module._stage_source_rows_from_json(
+                    invalid_connection,
+                    payload=payload,
+                    source_file_id="file-sha",
+                    sheet_name="Online Retail",
+                    selected_rows=[2],
+                )
+        finally:
+            invalid_connection.close()
+
+
+def test_json_source_stage_materializes_scalar_items_once_before_validation() -> None:
+    records = [
+        dict(
+            source_stage_record(
+                row_number=row_number,
+                quantity_raw=str(
+                    9_007_199_254_740_993
+                    if row_number % 101 == 0
+                    else row_number - 500
+                ),
+            ),
+            stock_code_raw=f"SKU-{row_number % 97:02d}",
+            unit_price_raw=None if row_number % 11 == 0 else "1.234567",
+        )
+        for row_number in range(2, 519)
+    ]
+    selected_rows = list(range(2, 519))
+    connection = duckdb.connect(":memory:")
+    queries: list[str] = []
+
+    class RecordingConnection:
+        def execute(
+            self, query: str, parameters: object | None = None
+        ) -> duckdb.DuckDBPyConnection:
+            queries.append(" ".join(query.split()))
+            if parameters is None:
+                return connection.execute(query)
+            return connection.execute(query, parameters)
+
+    try:
+        connection.execute("SET memory_limit='512MB'")
+        connection.execute("SET threads=1")
+        pipeline_module._stage_source_rows_from_json(
+            RecordingConnection(),
+            payload=json.dumps(records, ensure_ascii=False),
+            source_file_id="file-sha",
+            sheet_name="Online Retail",
+            selected_rows=selected_rows,
+        )
+        assert connection.execute(
+            "SELECT COUNT(*) FROM pipeline_source_items"
+        ).fetchone()[0] == 517
+        assert connection.execute(
+            "SELECT COUNT(*) FROM pipeline_source_stage"
+        ).fetchone()[0] == 517
+        assert connection.execute(
+            """
+            SELECT quantity_raw, unit_price_raw
+            FROM pipeline_source_stage
+            WHERE source_row_number = 101
+            """
+        ).fetchone() == ("9007199254740993", "1.234567")
+
+        json_each_queries = [query for query in queries if "json_each(" in query]
+        assert len(json_each_queries) == 1
+        assert (
+            "FROM json_each((SELECT document FROM pipeline_source_payload))"
+            in json_each_queries[0]
+        )
+        assert not any(
+            "pipeline_source_payload, json_each(document)" in query
+            for query in queries
+        )
+        assert sum("FROM pipeline_source_items" in query for query in queries) == 4
+    finally:
+        connection.close()
+
+
+def test_staged_write_preserves_first_raw_values_fills_only_null_kind_and_rolls_back() -> None:
+    connection = duckdb.connect(":memory:")
+    try:
+        pipeline_module.initialize_database(connection)
+        now = pipeline_module.utc_now()
+        connection.execute(
+            """
+            INSERT INTO pipeline_runs
+                (run_id, source_file_id, input_path, status, started_at)
+            VALUES ('run-json', 'file-sha', 'test.xlsx', 'running', ?)
+            """,
+            [now],
+        )
+        connection.execute(
+            """
+            INSERT INTO source_rows VALUES
+                ('file-sha', 'Online Retail', 2, 'old-2', 'text', 'P2', 'old',
+                 '1', '2010-12-01 08:26:00', '1', NULL, 'UK', ?),
+                ('file-sha', 'Online Retail', 3, 'old-3', NULL, 'P3', 'old',
+                 '2', '2010-12-01 08:27:00', '2', NULL, 'UK', ?)
+            """,
+            [now, now],
+        )
+        records = [
+            dict(
+                source_stage_record(
+                    row_number=2,
+                    quantity_raw="99",
+                    invoice_no_source_kind="integer",
+                ),
+                stock_code_raw="P2",
+            ),
+            dict(
+                source_stage_record(
+                    row_number=3,
+                    quantity_raw="88",
+                    invoice_no_source_kind="integer",
+                ),
+                stock_code_raw="P3",
+            ),
+            dict(
+                source_stage_record(
+                    row_number=4,
+                    quantity_raw="7",
+                    invoice_no_source_kind="text",
+                ),
+                stock_code_raw="P4",
+            ),
+        ]
+
+        connection.execute("BEGIN TRANSACTION")
+        pipeline_module._stage_source_rows_from_json(
+            connection,
+            payload=json.dumps(records, ensure_ascii=False),
+            source_file_id="file-sha",
+            sheet_name="Online Retail",
+            selected_rows=[2, 3, 4],
+        )
+        pipeline_module._persist_staged_source_rows(connection, run_id="run-json")
+        assert connection.execute(
+            """
+            SELECT source_row_number, quantity_raw, invoice_no_source_kind
+            FROM source_rows ORDER BY source_row_number
+            """
+        ).fetchall() == [(2, "1", "text"), (3, "2", "integer"), (4, "7", "text")]
+        assert connection.execute(
+            "SELECT COUNT(*) FROM run_input_rows WHERE run_id = 'run-json'"
+        ).fetchone()[0] == 3
+        connection.execute("ROLLBACK")
+
+        assert connection.execute(
+            """
+            SELECT source_row_number, quantity_raw, invoice_no_source_kind
+            FROM source_rows ORDER BY source_row_number
+            """
+        ).fetchall() == [(2, "1", "text"), (3, "2", None)]
+        assert connection.execute(
+            "SELECT COUNT(*) FROM run_input_rows WHERE run_id = 'run-json'"
+        ).fetchone()[0] == 0
+    finally:
+        connection.close()
+
+
+def test_json_stage_supports_legacy_additive_source_rows_column_order(
+    tmp_path: Path,
+) -> None:
+    workbook, manifest, database, published = local_paths(tmp_path, [2, 3])
+    connection = duckdb.connect(str(database))
+    try:
+        connection.execute(
+            """
+            CREATE TABLE source_rows (
+                source_file_id VARCHAR NOT NULL,
+                sheet_name VARCHAR NOT NULL,
+                source_row_number BIGINT NOT NULL,
+                invoice_no_raw VARCHAR,
+                stock_code_raw VARCHAR,
+                description_raw VARCHAR,
+                quantity_raw VARCHAR,
+                invoice_date_raw VARCHAR,
+                unit_price_raw VARCHAR,
+                customer_id_raw VARCHAR,
+                country_raw VARCHAR,
+                loaded_at TIMESTAMPTZ NOT NULL,
+                PRIMARY KEY (source_file_id, sheet_name, source_row_number)
+            )
+            """
+        )
+    finally:
+        connection.close()
+
+    first = run_pipeline(
+        source_path=workbook,
+        manifest_path=manifest,
+        database_path=database,
+        published_root=published,
+        selected_rows=[2, 3],
+    )
+
+    connection = duckdb.connect(str(database))
+    try:
+        column_names = [
+            row[1]
+            for row in connection.execute(
+                "PRAGMA table_info('source_rows')"
+            ).fetchall()
+        ]
+        assert column_names[-2:] == ["loaded_at", "invoice_no_source_kind"]
+        stored_rows = connection.execute(
+            """
+            SELECT source_row_number, invoice_no_raw, stock_code_raw,
+                   description_raw, quantity_raw, invoice_date_raw,
+                   unit_price_raw, customer_id_raw, country_raw,
+                   invoice_no_source_kind
+            FROM source_rows
+            ORDER BY source_row_number
+            """
+        ).fetchall()
+        assert stored_rows == [
+            (
+                2,
+                "536365",
+                "85123A",
+                "WHITE HANGING HEART T-LIGHT HOLDER",
+                "6",
+                "2010-12-01 08:26:00",
+                "2.55",
+                "TEST-CUSTOMER",
+                "United Kingdom",
+                "integer",
+            ),
+            (
+                3,
+                "536365",
+                "71053",
+                "WHITE METAL LANTERN",
+                "6",
+                "2010-12-01 08:26:00",
+                "3.39",
+                "TEST-CUSTOMER",
+                "United Kingdom",
+                "integer",
+            ),
+        ]
+        connection.execute(
+            """
+            UPDATE source_rows
+            SET invoice_no_source_kind = NULL
+            WHERE source_row_number = 2
+            """
+        )
+    finally:
+        connection.close()
+
+    second = run_pipeline(
+        source_path=workbook,
+        manifest_path=manifest,
+        database_path=database,
+        published_root=published,
+        selected_rows=[2, 3],
+    )
+    assert second["source"]["input_scope_id"] == first["source"]["input_scope_id"]
+    assert second["products"] == first["products"]
+
+    connection = duckdb.connect(str(database), read_only=True)
+    try:
+        assert connection.execute(
+            """
+            SELECT invoice_no_source_kind
+            FROM source_rows
+            WHERE source_row_number = 2
+            """
+        ).fetchone()[0] == "integer"
+        assert connection.execute("SELECT COUNT(*) FROM source_rows").fetchone()[0] == 2
+        assert connection.execute("SELECT COUNT(*) FROM run_input_rows").fetchone()[0] == 4
+    finally:
+        connection.close()
+
+    assert load_current_result(database, published)["run"]["run_id"] == second[
+        "run"
+    ]["run_id"]
 
 
 def marker_breakdown(product_result: dict) -> dict[str, dict]:
@@ -355,6 +727,62 @@ def test_incomplete_run_does_not_replace_last_good_result(
     history = load_run_history(database)
     assert history[0]["status"] == "failed"
     assert history[1]["status"] == "succeeded"
+
+
+@pytest.mark.parametrize("mutation", ["extra", "replace"])
+def test_invalid_staged_locations_roll_back_without_replacing_last_good(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mutation: str,
+) -> None:
+    workbook, manifest, database, published = local_paths(tmp_path, [2, 3])
+    last_good = run_pipeline(
+        source_path=workbook,
+        manifest_path=manifest,
+        database_path=database,
+        published_root=published,
+    )
+    original_builder = pipeline_module._build_source_stage_payload
+
+    def malformed_payload(**kwargs: object) -> str:
+        records = json.loads(original_builder(**kwargs))
+        if mutation == "extra":
+            added = dict(records[0], source_row_number=99)
+            records.append(added)
+        else:
+            records[0] = dict(records[0], source_row_number=99)
+        return json.dumps(records, ensure_ascii=False, separators=(",", ":"))
+
+    monkeypatch.setattr(
+        pipeline_module, "_build_source_stage_payload", malformed_payload
+    )
+    expected_error = (
+        "row count mismatch" if mutation == "extra" else "staged source locations"
+    )
+    with pytest.raises(PipelineFailure, match=expected_error):
+        run_pipeline(
+            source_path=workbook,
+            manifest_path=manifest,
+            database_path=database,
+            published_root=published,
+        )
+
+    assert load_current_result(database, published) == last_good
+    history = load_run_history(database)
+    assert history[0]["status"] == "failed"
+    assert history[1]["run_id"] == last_good["run"]["run_id"]
+    connection = duckdb.connect(str(database), read_only=True)
+    try:
+        assert connection.execute("SELECT COUNT(*) FROM source_rows").fetchone()[0] == 2
+        assert connection.execute(
+            "SELECT COUNT(*) FROM run_input_rows WHERE run_id = ?",
+            [history[0]["run_id"]],
+        ).fetchone()[0] == 0
+        assert connection.execute(
+            "SELECT COUNT(*) FROM published_results"
+        ).fetchone()[0] == 1
+    finally:
+        connection.close()
 
 
 def test_unreadable_input_does_not_replace_last_good_result(tmp_path: Path) -> None:
