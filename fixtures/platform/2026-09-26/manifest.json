@@ -1,0 +1,58 @@
+{
+  "schema_version": 1,
+  "dataset": "Synthetic shopping orders for the local recovery flow",
+  "target_date": "2026-09-26",
+  "timezone": "Asia/Seoul",
+  "coverage": {
+    "from": "09:00",
+    "to": "17:00",
+    "full_day": false
+  },
+  "input_limits": {
+    "max_source_bytes": 262144,
+    "max_orders_per_segment": 100,
+    "max_lines_per_segment": 500
+  },
+  "products": [
+    {"product_id": "P-101", "name": "데일리 머그"},
+    {"product_id": "P-205", "name": "리넨 타월"},
+    {"product_id": "P-330", "name": "수납 박스"},
+    {"product_id": "P-410", "name": "데스크 램프"}
+  ],
+  "initial_loaded_segments": ["SEG-0900", "SEG-1100", "SEG-1500"],
+  "recovery_target_segment": "SEG-1300",
+  "expected_segments": [
+    {
+      "segment_id": "SEG-0900",
+      "from": "09:00",
+      "to": "11:00",
+      "source_file": "segments/SEG-0900.json",
+      "expected_sha256": "6a1780b7e2d5968c074ecfddeb246c341c9ab9b6820d0abdb9dfa181770a92db",
+      "archive_arrived_at": "2026-09-26T11:04:00+09:00"
+    },
+    {
+      "segment_id": "SEG-1100",
+      "from": "11:00",
+      "to": "13:00",
+      "source_file": "segments/SEG-1100.json",
+      "expected_sha256": "329fcc102c8c2eff620687e4625611aaa8cc2910a96ed443084cbdaf291cd74e",
+      "archive_arrived_at": "2026-09-26T13:04:00+09:00"
+    },
+    {
+      "segment_id": "SEG-1300",
+      "from": "13:00",
+      "to": "15:00",
+      "source_file": "segments/SEG-1300.json",
+      "expected_sha256": "33788680ec687e41eede8ad5f556d0ed09fd43a982738268c489ff8a56c24901",
+      "archive_arrived_at": "2026-09-26T15:03:00+09:00"
+    },
+    {
+      "segment_id": "SEG-1500",
+      "from": "15:00",
+      "to": "17:00",
+      "source_file": "segments/SEG-1500.json",
+      "expected_sha256": "6fd180b3b4cf4072a85cd1e52b0a7f289a9cb100e8805874d35a1ce6885ca413",
+      "archive_arrived_at": "2026-09-26T17:04:00+09:00"
+    }
+  ]
+}

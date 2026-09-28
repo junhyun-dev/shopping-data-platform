@@ -22,3 +22,9 @@ KAFKA_CONFLICT_EVENT = PROJECT_ROOT / "config" / "kafka-conflict-event.json"
 KAFKA_SINK_SCHEMA_SQL = PROJECT_ROOT / "sql" / "kafka_sink_schema.sql"
 KAFKA_FIXTURE_BATCH_SQL = PROJECT_ROOT / "sql" / "kafka_fixture_batch.sql"
 KAFKA_DISTRIBUTION_ROOT = PROJECT_ROOT / "var" / "kafka"
+PLATFORM_FIXTURE_MANIFEST = (
+    PROJECT_ROOT / "fixtures" / "platform" / "2026-09-26" / "manifest.json"
+)
+PLATFORM_SCHEMA_SQL = PROJECT_ROOT / "sql" / "platform_schema.sql"
+PLATFORM_PRODUCT_SUMMARY_SQL = PROJECT_ROOT / "sql" / "platform_product_summary.sql"
+PLATFORM_CONTRIBUTIONS_SQL = PROJECT_ROOT / "sql" / "platform_contribution_rows.sql"

@@ -1,0 +1,1162 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>쇼핑 데이터 운영 · 전체 흐름 시안</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #16232a;
+      --muted: #627078;
+      --paper: #f4f5f1;
+      --surface: #ffffff;
+      --surface-soft: #f8f9f6;
+      --line: #d9dfda;
+      --line-strong: #bdc8c1;
+      --nav: #14282c;
+      --nav-active: #203b3e;
+      --teal: #0d6b63;
+      --teal-soft: #e2f2ee;
+      --amber: #9b5d12;
+      --amber-soft: #fff2dc;
+      --red: #a13f3f;
+      --red-soft: #fbe9e6;
+      --blue: #315f80;
+      --blue-soft: #e8f0f5;
+    }
+
+    * { box-sizing: border-box; }
+    [hidden] { display: none !important; }
+    html { background: var(--paper); }
+    body {
+      margin: 0;
+      min-width: 320px;
+      color: var(--ink);
+      background: var(--paper);
+      font-family: "Pretendard", "Noto Sans KR", "Apple SD Gothic Neo", system-ui, sans-serif;
+      line-height: 1.45;
+    }
+    button, input, select { font: inherit; }
+    button { cursor: pointer; }
+    button:disabled { cursor: not-allowed; opacity: .55; }
+    button:focus-visible, a:focus-visible, summary:focus-visible {
+      outline: 3px solid rgba(13, 107, 99, .28);
+      outline-offset: 2px;
+    }
+    a { color: inherit; }
+
+    .app-shell { min-height: 100vh; display: grid; grid-template-columns: 238px minmax(0, 1fr); }
+    .sidebar {
+      position: sticky;
+      top: 0;
+      height: 100vh;
+      padding: 20px 16px;
+      color: #e8f0ee;
+      background: var(--nav);
+      border-right: 1px solid rgba(255,255,255,.09);
+    }
+    .brand { display: flex; align-items: center; gap: 10px; padding: 0 4px 22px; }
+    .brand-mark {
+      width: 37px; height: 37px; display: grid; place-items: center; flex: 0 0 auto;
+      border: 1px solid rgba(255,255,255,.22); background: #29484b; font-weight: 850;
+    }
+    .brand strong, .brand small { display: block; }
+    .brand strong { font-size: .9rem; }
+    .brand small { margin-top: 1px; color: #a9bfbb; font-size: .69rem; }
+    .nav-label { margin: 10px 10px 5px; color: #8da7a3; font-size: .64rem; font-weight: 800; letter-spacing: .12em; }
+    .nav-button, .uci-link {
+      width: 100%; display: flex; align-items: center; gap: 10px; margin: 3px 0; padding: 10px 11px;
+      color: #cbd9d6; background: transparent; border: 1px solid transparent; text-align: left; text-decoration: none;
+    }
+    .nav-button span, .uci-link span { width: 23px; color: #8ea9a5; font-size: .66rem; font-variant-numeric: tabular-nums; }
+    .nav-button:hover, .uci-link:hover { background: rgba(255,255,255,.05); }
+    .nav-button.is-active { color: #fff; background: var(--nav-active); border-color: rgba(255,255,255,.12); box-shadow: inset 3px 0 #75c5b8; }
+    .uci-link { margin-top: 8px; border-top-color: rgba(255,255,255,.13); }
+    .sidebar-foot { position: absolute; left: 17px; right: 17px; bottom: 18px; padding-top: 12px; border-top: 1px solid rgba(255,255,255,.13); }
+    .sidebar-foot strong, .sidebar-foot span { display: block; }
+    .sidebar-foot strong { font-size: .72rem; }
+    .sidebar-foot span { margin-top: 4px; color: #a9bfbb; font-size: .67rem; }
+
+    main { min-width: 0; padding: 18px clamp(16px, 2.7vw, 36px) 42px; }
+    .topbar {
+      display: flex; align-items: center; justify-content: space-between; gap: 18px;
+      max-width: 1500px; margin: 0 auto 10px;
+    }
+    .eyebrow { margin: 0; color: var(--muted); font-size: .65rem; font-weight: 820; letter-spacing: .1em; }
+    h1 { margin: 2px 0 0; font-size: clamp(1.15rem, 2vw, 1.42rem); letter-spacing: -.035em; }
+    .top-actions { display: flex; align-items: center; gap: 7px; }
+    .outline-button, .primary-button, .danger-button, .text-button {
+      padding: 7px 10px; border-radius: 5px; font-size: .7rem; font-weight: 760; white-space: nowrap;
+    }
+    .outline-button { color: var(--teal); background: #fff; border: 1px solid #a4cbc4; }
+    .primary-button { color: #fff; background: var(--teal); border: 1px solid var(--teal); }
+    .danger-button { color: #fff; background: var(--red); border: 1px solid var(--red); }
+    .text-button { padding-left: 0; padding-right: 0; color: var(--teal); background: transparent; border: 0; }
+    .status-chip { padding: 6px 9px; color: #70420e; background: var(--amber-soft); border: 1px solid #ddbf88; font-size: .68rem; font-weight: 780; }
+    .status-chip.is-ok { color: #0e554e; background: var(--teal-soft); border-color: #a9d3ca; }
+    .status-chip.is-failed { color: var(--red); background: var(--red-soft); border-color: #e3b8b2; }
+
+    .prototype-banner {
+      display: flex; align-items: center; justify-content: space-between; gap: 12px;
+      max-width: 1500px; margin: 0 auto 12px; padding: 9px 12px;
+      color: #5f4215; background: var(--amber-soft); border: 1px solid #dfc08a; font-size: .71rem;
+    }
+    .prototype-banner strong { margin-right: 6px; }
+    .prototype-banner span:last-child { color: #7e5c27; white-space: nowrap; }
+
+    .page-head {
+      display: flex; align-items: end; justify-content: space-between; gap: 18px;
+      max-width: 1500px; margin: 0 auto 10px;
+    }
+    .page-head h2 { margin: 0; font-size: 1.05rem; letter-spacing: -.03em; }
+    .page-head p { margin: 3px 0 0; color: var(--muted); font-size: .74rem; }
+    .page-meta { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+    .meta-pill { padding: 5px 8px; color: var(--muted); background: var(--surface); border: 1px solid var(--line); font-size: .66rem; }
+
+    .notice {
+      max-width: 1500px; margin: 0 auto 10px; padding: 10px 12px;
+      display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 10px;
+      border: 1px solid var(--line); background: var(--surface);
+    }
+    .notice.is-warning { border-color: #dfc08a; background: #fffaf0; }
+    .notice.is-error { border-color: #e2b8b3; background: var(--red-soft); }
+    .notice.is-ok { border-color: #a9d3ca; background: var(--teal-soft); }
+    .notice-mark { width: 8px; height: 34px; background: var(--amber); }
+    .notice.is-error .notice-mark { background: var(--red); }
+    .notice.is-ok .notice-mark { background: var(--teal); }
+    .notice strong, .notice span { display: block; }
+    .notice strong { font-size: .78rem; }
+    .notice span { margin-top: 1px; color: var(--muted); font-size: .69rem; }
+
+    .summary-strip {
+      display: grid; grid-template-columns: repeat(5, minmax(0, 1fr));
+      max-width: 1500px; margin: 0 auto 12px; background: var(--surface); border: 1px solid var(--line);
+    }
+    .summary-strip dl { min-width: 0; margin: 0; padding: 10px 12px; border-right: 1px solid var(--line); }
+    .summary-strip dl:last-child { border-right: 0; }
+    dt { color: var(--muted); font-size: .65rem; font-weight: 760; }
+    dd { margin: 3px 0 0; font-size: .9rem; font-weight: 790; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+    dd small { display: block; margin-top: 1px; color: var(--muted); font-size: .62rem; font-weight: 550; }
+
+    .result-version-strip {
+      display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+      max-width: 1500px; margin: 0 auto 12px; border: 1px solid var(--line); background: var(--surface);
+    }
+    .result-version { min-width: 0; padding: 10px 12px; border-right: 1px solid var(--line); }
+    .result-version:last-child { border-right: 0; }
+    .result-version.is-provisional { background: #fffaf0; }
+    .result-version.is-current { background: var(--teal-soft); }
+    .result-version span, .result-version strong, .result-version small { display: block; }
+    .result-version span { color: var(--muted); font-size: .65rem; font-weight: 760; }
+    .result-version strong { margin-top: 2px; font-size: .78rem; font-variant-numeric: tabular-nums; }
+    .result-version small { margin-top: 2px; color: var(--muted); font-size: .63rem; line-height: 1.45; }
+
+    .grid-2 { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(330px, .65fr); gap: 12px; max-width: 1500px; margin: 0 auto; align-items: start; }
+    .panel { min-width: 0; background: var(--surface); border: 1px solid var(--line); }
+    .panel + .panel { margin-top: 12px; }
+    .panel-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 14px 10px; border-bottom: 1px solid var(--line); }
+    .panel-head h3 { margin: 0; font-size: .88rem; letter-spacing: -.02em; }
+    .panel-head p { margin: 2px 0 0; color: var(--muted); font-size: .68rem; }
+    .panel-body { padding: 13px 14px; }
+    .panel-note { margin: 0; color: var(--muted); font-size: .69rem; }
+
+    .trend { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; height: 205px; align-items: end; }
+    .trend-column { display: grid; grid-template-rows: 1fr auto auto; gap: 5px; height: 100%; min-width: 0; text-align: center; }
+    .bar-track { position: relative; align-self: stretch; display: flex; align-items: end; justify-content: center; background: linear-gradient(to top, #f4f6f2 1px, transparent 1px) 0 0/100% 25%; border-bottom: 1px solid var(--line-strong); }
+    .bar { width: min(58px, 70%); min-height: 4px; background: var(--teal); transition: height .18s ease; }
+    .bar.is-missing { background: repeating-linear-gradient(135deg, #d7b572 0 6px, #fff2dc 6px 12px); border: 1px solid #d7b572; }
+    .bar-value { position: absolute; left: 0; right: 0; bottom: calc(var(--bar-height) + 5px); font-size: .73rem; font-weight: 800; font-variant-numeric: tabular-nums; }
+    .trend-column strong { font-size: .68rem; }
+    .trend-column span { color: var(--muted); font-size: .62rem; white-space: nowrap; }
+
+    .table-wrap { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; font-size: .75rem; }
+    th { padding: 8px 10px; color: var(--muted); background: var(--surface-soft); border-bottom: 1px solid var(--line); font-size: .65rem; text-align: left; white-space: nowrap; }
+    td { padding: 9px 10px; border-bottom: 1px solid #e8ece8; vertical-align: middle; }
+    tbody tr:last-child td { border-bottom: 0; }
+    tbody tr:hover { background: #f8fbf9; }
+    .number { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+    .row-button { padding: 4px 7px; color: var(--teal); background: #fff; border: 1px solid #a4cbc4; border-radius: 4px; font-size: .66rem; font-weight: 760; white-space: nowrap; }
+    .status { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; font-size: .67rem; font-weight: 760; }
+    .status::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--amber); }
+    .status.ok { color: var(--teal); }
+    .status.ok::before { background: var(--teal); }
+    .status.bad { color: var(--red); }
+    .status.bad::before { background: var(--red); }
+    .status.wait { color: var(--blue); }
+    .status.wait::before { background: var(--blue); }
+
+    .step-list { display: grid; }
+    .step { display: grid; grid-template-columns: 30px minmax(0, 1fr); gap: 10px; padding: 11px 0; border-bottom: 1px solid var(--line); }
+    .step:last-child { border-bottom: 0; }
+    .step-index { width: 26px; height: 26px; display: grid; place-items: center; color: var(--teal); background: var(--teal-soft); font-size: .65rem; font-weight: 820; }
+    .step strong, .step span { display: block; }
+    .step strong { font-size: .75rem; }
+    .step span { margin-top: 2px; color: var(--muted); font-size: .67rem; }
+
+    .manifest-table { min-width: 840px; }
+    .manifest-table tr.is-issue { background: #fff9ed; }
+    .manifest-table tr.is-selected { outline: 2px solid rgba(13,107,99,.25); outline-offset: -2px; }
+    .manifest-key { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .68rem; }
+    .time-note { display: block; margin-top: 3px; color: var(--muted); font-size: .61rem; white-space: nowrap; }
+    .seg-controls { display: flex; gap: 6px; flex-wrap: wrap; }
+    .scenario-button { padding: 5px 8px; color: var(--ink); background: #fff; border: 1px solid var(--line-strong); font-size: .67rem; }
+    .scenario-button.is-active { color: var(--teal); background: var(--teal-soft); border-color: #9fc9c2; font-weight: 780; }
+
+    .impact-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 9px; }
+    .impact-box { padding: 11px 12px; background: var(--surface-soft); border: 1px solid var(--line); }
+    .impact-box strong, .impact-box span { display: block; }
+    .impact-box strong { margin-top: 4px; font-size: .84rem; font-variant-numeric: tabular-nums; }
+    .impact-box span { color: var(--muted); font-size: .65rem; }
+    .source-state { display: grid; grid-template-columns: 140px minmax(0, 1fr); gap: 7px 12px; margin: 0; }
+    .source-state dt { font-weight: 760; }
+    .source-state dd { margin: 0; font-size: .72rem; overflow-wrap: anywhere; }
+    .callout { margin-top: 10px; padding: 10px 11px; color: #68420e; background: var(--amber-soft); border: 1px solid #dec18d; font-size: .69rem; }
+    .callout.is-blue { color: #274f6a; background: var(--blue-soft); border-color: #bfd0dd; }
+    .callout strong { display: block; margin-bottom: 2px; }
+
+    .ops-layout { display: grid; grid-template-columns: minmax(0, .76fr) minmax(0, 1.24fr); gap: 12px; max-width: 1500px; margin: 0 auto; align-items: start; }
+    .action-stack { display: flex; gap: 7px; flex-wrap: wrap; margin-top: 11px; }
+    .run-list { display: grid; }
+    .run-row { display: grid; grid-template-columns: 104px 90px minmax(0, 1fr); gap: 9px; padding: 9px 0; border-bottom: 1px solid var(--line); font-size: .68rem; }
+    .run-row:last-child { border-bottom: 0; }
+    .run-row code { color: var(--muted); font-size: .64rem; }
+    .run-row span:last-child { color: var(--muted); }
+
+    .comparison-strip { display: grid; grid-template-columns: 1.25fr repeat(3, minmax(0, 1fr)); border-bottom: 1px solid var(--line); }
+    .comparison-strip > div { padding: 10px 11px; border-right: 1px solid var(--line); }
+    .comparison-strip > div:last-child { border-right: 0; }
+    .comparison-strip strong, .comparison-strip span { display: block; }
+    .comparison-strip strong { margin-top: 2px; font-size: .78rem; font-variant-numeric: tabular-nums; }
+    .comparison-strip span { color: var(--muted); font-size: .64rem; }
+    .product-comparison { min-width: 720px; }
+    .product-comparison tr.is-selected { background: var(--teal-soft); }
+    .delta { color: var(--teal); font-weight: 780; }
+    .detail-drawer { margin-top: 12px; border-top: 1px solid var(--line-strong); }
+    .detail-drawer-head { display: flex; justify-content: space-between; gap: 12px; padding: 11px 13px; background: var(--surface-soft); border-bottom: 1px solid var(--line); }
+    .detail-drawer-head strong { font-size: .78rem; }
+    .detail-drawer-head span { color: var(--muted); font-size: .66rem; }
+    .contribution-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .contribution-side { min-width: 0; padding: 11px 13px; }
+    .contribution-side + .contribution-side { border-left: 1px solid var(--line); }
+    .contribution-side h4 { margin: 0 0 7px; font-size: .73rem; }
+    .contribution { padding: 7px 0; border-bottom: 1px solid var(--line); }
+    .contribution:last-child { border-bottom: 0; }
+    .contribution strong, .contribution span { display: block; }
+    .contribution strong { font-size: .7rem; }
+    .contribution span { margin-top: 2px; color: var(--muted); font-size: .64rem; }
+    .contribution.is-added { margin: 0 -7px; padding: 7px; background: var(--teal-soft); }
+
+    dialog { width: min(680px, calc(100vw - 28px)); padding: 0; border: 1px solid var(--line-strong); color: var(--ink); background: #fff; box-shadow: 0 20px 60px rgba(20,40,44,.2); }
+    dialog::backdrop { background: rgba(12,25,28,.52); }
+    .dialog-head { display: flex; justify-content: space-between; gap: 12px; padding: 13px 15px; border-bottom: 1px solid var(--line); }
+    .dialog-head h2 { margin: 0; font-size: .95rem; }
+    .dialog-head button { color: var(--muted); background: transparent; border: 0; font-size: 1.1rem; }
+    .dialog-body { padding: 14px 15px 16px; }
+    .contract-grid { display: grid; grid-template-columns: 145px minmax(0, 1fr); gap: 8px 12px; margin: 0; }
+    .contract-grid dt { font-weight: 780; }
+    .contract-grid dd { margin: 0; font-size: .72rem; }
+    .contract-code { margin-top: 12px; padding: 10px; overflow: auto; color: #dfeae8; background: #1c2b2e; font: .67rem/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
+
+    .view { min-width: 0; }
+    .view[hidden] { display: none; }
+    #overviewView.is-normal:not([hidden]) { display: flex; flex-direction: column; }
+    #overviewView.is-normal > .page-head { order: 1; }
+    #overviewView.is-normal > #overviewSummary { order: 2; }
+    #overviewView.is-normal > .grid-2 { order: 3; }
+    #overviewView.is-normal > #resultVersions { order: 4; margin-top: 12px; }
+    #overviewView.is-normal > #overviewNotice { display: none; }
+    #overviewView.is-normal > .page-head,
+    #overviewView.is-normal > #overviewSummary,
+    #overviewView.is-normal > .grid-2,
+    #overviewView.is-normal > #resultVersions { width: 100%; }
+
+    @media (max-width: 1100px) {
+      .grid-2, .ops-layout { grid-template-columns: minmax(0, 1fr); }
+      .sidebar-foot { display: none; }
+    }
+
+    @media (max-width: 820px) {
+      .app-shell { grid-template-columns: minmax(0, 1fr); }
+      .sidebar { position: static; height: auto; padding: 11px 13px; }
+      .brand { padding-bottom: 9px; }
+      .sidebar nav { display: flex; gap: 5px; overflow-x: auto; }
+      .nav-label, .sidebar-foot { display: none; }
+      .nav-button, .uci-link { width: auto; margin: 0; white-space: nowrap; }
+      .uci-link { border-top: 1px solid transparent; border-left: 1px solid rgba(255,255,255,.13); }
+      main { padding-top: 13px; }
+      .summary-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .summary-strip dl { border-bottom: 1px solid var(--line); }
+      .summary-strip dl:nth-child(even) { border-right: 0; }
+      .summary-strip dl:last-child { grid-column: 1 / -1; border-bottom: 0; }
+      .result-version-strip { grid-template-columns: 1fr; }
+      .result-version { border-right: 0; border-bottom: 1px solid var(--line); }
+      .result-version:last-child { border-bottom: 0; }
+      .topbar, .page-head { align-items: flex-start; }
+      .page-head { flex-direction: column; }
+      .page-meta { justify-content: flex-start; }
+      .prototype-banner { align-items: flex-start; flex-direction: column; }
+      .prototype-banner span:last-child { white-space: normal; }
+    }
+
+    @media (max-width: 560px) {
+      .brand small { display: none; }
+      .nav-button span, .uci-link span { display: none; }
+      .nav-button, .uci-link { padding: 8px 9px; font-size: .72rem; }
+      .topbar { align-items: flex-start; flex-direction: column; }
+      .top-actions { width: 100%; flex-wrap: wrap; }
+      .trend { height: 180px; gap: 5px; }
+      .summary-strip { grid-template-columns: 1fr 1fr; }
+      .impact-grid { grid-template-columns: 1fr; }
+      .source-state { grid-template-columns: 1fr; }
+      .comparison-strip { grid-template-columns: 1fr 1fr; }
+      .comparison-strip > div:nth-child(2) { border-right: 0; }
+      .comparison-strip > div:nth-child(-n+2) { border-bottom: 1px solid var(--line); }
+      .contribution-grid { grid-template-columns: 1fr; }
+      .contribution-side + .contribution-side { border-left: 0; border-top: 1px solid var(--line); }
+      .notice { grid-template-columns: auto minmax(0, 1fr); }
+      .notice .outline-button, .notice .primary-button { grid-column: 2; justify-self: start; }
+      .contract-grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <span class="brand-mark">SO</span>
+        <span><strong>쇼핑 데이터 운영</strong><small>현황 분석 · 처리 운영 시안</small></span>
+      </div>
+      <nav aria-label="플랫폼 주요 화면">
+        <p class="nav-label">합성 주문 흐름</p>
+        <button class="nav-button is-active" type="button" data-view="overview"><span>01</span>쇼핑 현황</button>
+        <button class="nav-button" type="button" data-view="impact"><span>02</span>상품·거래</button>
+        <button class="nav-button" type="button" data-view="completeness"><span>03</span>데이터 처리</button>
+        <button class="nav-button" type="button" data-view="operations"><span>04</span>문제·복구</button>
+        <a class="uci-link" href="./index.html"><span>↗</span>UCI 표본 관찰</a>
+      </nav>
+      <div class="sidebar-foot">
+        <strong>기준일 2026-09-26</strong>
+        <span>Asia/Seoul · 09:00–17:00<br>고정 시연 범위</span>
+      </div>
+    </aside>
+
+    <main>
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">SYNTHETIC ORDER OPERATIONS · REVIEW PROTOTYPE</p>
+          <h1 id="appTitle">어제 주문 자료가 일부 부족합니다</h1>
+        </div>
+        <div class="top-actions">
+          <button id="contractButton" class="outline-button" type="button">예시 데이터 계약</button>
+          <span id="globalStatus" class="status-chip">부분 결과</span>
+        </div>
+      </header>
+
+      <div class="prototype-banner">
+        <span><strong>합성 예시 · 모의 조작</strong>화면의 버튼은 fixture 상태만 바꾸며 API·DB·재처리 작업을 실행하지 않습니다.</span>
+        <span>주문품목 금액 합 · 결제액 아님</span>
+      </div>
+
+      <section id="overviewView" class="view">
+        <div class="page-head">
+          <div>
+            <h2>쇼핑 현황</h2>
+            <p id="overviewLead">주문 흐름과 관심 상품에서 거래·계산 근거까지 내려갑니다.</p>
+          </div>
+          <div class="page-meta">
+            <span class="meta-pill">어제 = 2026-09-26 고정</span>
+            <span class="meta-pill">Asia/Seoul</span>
+            <span class="meta-pill">09:00–17:00 시연 범위 · 하루 전체 아님</span>
+          </div>
+        </div>
+        <div id="overviewNotice" class="notice is-warning"></div>
+        <div id="resultVersions" class="result-version-strip" aria-label="잠정 계산과 이전 정상 게시 결과 구분"></div>
+        <div id="overviewSummary" class="summary-strip"></div>
+        <div class="grid-2">
+          <div>
+            <section class="panel">
+              <div class="panel-head">
+                <div><h3 id="trendTitle">구간별 고유 주문 수</h3><p id="trendDescription">0도 실제 주문 0이 아니라 미적재일 수 있습니다.</p></div>
+                <span id="trendScope" class="meta-pill">manifest 기준</span>
+              </div>
+              <div class="panel-body"><div id="trend" class="trend"></div></div>
+            </section>
+            <section class="panel">
+              <div class="panel-head">
+                <div><h3 id="overviewProductsTitle">관심 상품</h3><p id="overviewProductsDescription">상품 수량에서 기여 주문과 주문품목을 확인합니다.</p></div>
+              </div>
+              <div class="table-wrap">
+                <table>
+                  <thead id="overviewProductHead"></thead>
+                  <tbody id="overviewProducts"></tbody>
+                </table>
+              </div>
+            </section>
+          </div>
+          <aside class="panel">
+            <div class="panel-head"><div><h3 id="overviewStepsTitle">다음 탐색</h3><p id="overviewStepsDescription">관심 숫자에서 주문·품목과 계산 근거로 내려갑니다.</p></div></div>
+            <div class="panel-body">
+              <div id="overviewSteps" class="step-list"></div>
+              <div id="overviewNextActions" class="action-stack"></div>
+            </div>
+          </aside>
+        </div>
+      </section>
+
+      <section id="completenessView" class="view" hidden>
+        <div class="page-head">
+          <div><h2>데이터 처리</h2><p>기대 수집 구간과 원천 보관자료·수집·적재 상태가 누락 판단의 근거입니다.</p></div>
+          <div class="seg-controls" aria-label="표시할 합성 상태">
+            <button class="scenario-button is-active" type="button" data-scenario="missing">수집 누락</button>
+            <button class="scenario-button" type="button" data-scenario="source-pending">원천 미도착 반례</button>
+            <button class="scenario-button" type="button" data-scenario="recovered">정상 복귀</button>
+          </div>
+        </div>
+        <div id="completenessNotice" class="notice is-warning"></div>
+        <section class="panel" style="max-width:1500px;margin:0 auto">
+          <div class="panel-head">
+            <div><h3>2026-09-26 수집 구간 상태</h3><p>기대한 네 구간과 실제로 보관·수집·적재한 상태를 대조합니다.</p></div>
+            <span id="manifestCount" class="meta-pill"></span>
+          </div>
+          <div class="table-wrap">
+            <table class="manifest-table">
+              <thead><tr><th>구간</th><th>주문 시각 범위</th><th>기대</th><th>원천 보관자료</th><th>수집 실행</th><th>적재</th><th>판정</th><th></th></tr></thead>
+              <tbody id="manifestRows"></tbody>
+            </table>
+          </div>
+        </section>
+        <div class="grid-2" style="margin-top:12px">
+          <section class="panel">
+            <div class="panel-head"><div><h3>누락 판정식</h3><p>매출이나 주문 감소는 이 조건에 포함하지 않습니다.</p></div></div>
+            <div class="panel-body">
+              <code class="manifest-key">expected=true AND loaded=false → 완전성 부족</code>
+              <div class="callout"><strong>회수 가능 조건</strong>원천 보관자료 존재 + 파일 지문 확인 + 해당 구간만 선택 + 성공 결과 대사 후 게시</div>
+            </div>
+          </section>
+          <section class="panel">
+            <div class="panel-head"><div><h3>원천 미도착은 다른 상태</h3><p>재처리는 없는 원천을 만들어 내지 못합니다.</p></div></div>
+            <div class="panel-body"><p class="panel-note">`원천 미도착 반례`에서는 같은 기대 구간의 원천 보관자료를 확인할 수 없습니다. 수집 재실행 버튼을 성공처럼 보여 주지 않고 원천 도착 확인을 다음 행동으로 둡니다.</p></div>
+          </section>
+        </div>
+      </section>
+
+      <section id="impactView" class="view" hidden>
+        <div class="page-head">
+          <div><h2 id="impactTitle">상품·거래</h2><p id="impactDescription">관심 상품의 숫자에서 기여 주문품목과 계산 기준으로 내려갑니다.</p></div>
+          <span id="impactSegmentBadge" class="meta-pill"></span>
+        </div>
+        <div id="impactNotice" class="notice is-warning"></div>
+        <div class="grid-2">
+          <div>
+            <section class="panel">
+              <div class="panel-head"><div><h3 id="impactSummaryTitle">상품 요약</h3><p id="impactSummaryDescription">표시 결과를 만든 주문과 주문품목을 함께 읽습니다.</p></div></div>
+              <div id="impactSummary" class="panel-body impact-grid"></div>
+            </section>
+            <section class="panel">
+              <div class="panel-head"><div><h3 id="impactTableTitle">기여 주문품목</h3><p id="impactTableDescription">주문 → 품목 → 상품 수량 계산을 확인합니다.</p></div></div>
+              <div class="table-wrap">
+                <table><thead id="impactTableHead"></thead><tbody id="impactProducts"></tbody></table>
+              </div>
+            </section>
+          </div>
+          <aside class="panel">
+            <div class="panel-head"><div><h3 id="sourcePanelTitle">계산 기준</h3><p id="sourcePanelDescription">표시 숫자의 범위와 묶는 기준을 확인합니다.</p></div></div>
+            <div class="panel-body">
+              <dl id="sourceState" class="source-state"></dl>
+              <div id="sourceCallout" class="callout"></div>
+              <div id="impactActions" class="action-stack"></div>
+            </div>
+          </aside>
+        </div>
+      </section>
+
+      <section id="operationsView" class="view" hidden>
+        <div class="page-head">
+          <div><h2>문제·복구</h2><p>실패는 마지막 정상 게시를 덮지 않고, 성공 뒤에만 정상 결과와 근거를 엽니다.</p></div>
+          <span id="operationBadge" class="status-chip"></span>
+        </div>
+        <div id="operationNotice" class="notice is-warning"></div>
+        <div class="ops-layout">
+          <aside>
+            <section class="panel">
+              <div class="panel-head"><div><h3>재수집·재처리 조건</h3><p>선택 구간과 게시 전 검사를 확인합니다.</p></div></div>
+              <div class="panel-body">
+                <dl id="operationConditions" class="source-state"></dl>
+                <div id="operationActions" class="action-stack"></div>
+              </div>
+            </section>
+            <section class="panel">
+              <div class="panel-head"><div><h3>실행 이력</h3><p>부분 결과와 성공 게시를 같은 상태로 취급하지 않습니다.</p></div></div>
+              <div id="runHistory" class="panel-body run-list"></div>
+            </section>
+          </aside>
+          <section class="panel">
+            <div class="panel-head"><div><h3>부분 결과와 복구 결과</h3><p>같은 합성 입력 계약으로 다시 계산한 값을 대조합니다.</p></div></div>
+            <div id="comparisonSummary" class="comparison-strip"></div>
+            <div class="table-wrap">
+              <table class="product-comparison">
+                <thead><tr><th>상품</th><th class="number">부분 결과</th><th class="number">복구 결과</th><th class="number">차이</th><th></th></tr></thead>
+                <tbody id="comparisonProducts"></tbody>
+              </table>
+            </div>
+            <div class="detail-drawer">
+              <div class="detail-drawer-head"><strong id="detailTitle">상품을 선택하세요</strong><span id="detailMeta">주문 → 주문품목 → 구간</span></div>
+              <div id="contributionGrid" class="contribution-grid"></div>
+            </div>
+          </section>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <dialog id="contractDialog">
+    <div class="dialog-head"><h2>합성 주문 입력 계약</h2><button id="closeContract" type="button" aria-label="닫기">×</button></div>
+    <div class="dialog-body">
+      <dl class="contract-grid">
+        <dt>시연 기준일</dt><dd>2026-09-26 · Asia/Seoul. 오늘 날짜로 자동 계산하지 않습니다.</dd>
+        <dt>시각 세 가지</dt><dd>주문 발생 시각, 원천 archive 도착 시각, 처리 완료 시각을 구별합니다. 늦게 도착하거나 처리됐다고 주문 날짜를 바꾸지 않습니다.</dd>
+        <dt>주문 식별</dt><dd><code>order_id</code>. 주문 수는 선택 범위의 고유 order_id 수입니다.</dd>
+        <dt>주문품목 식별</dt><dd><code>(order_id, line_id)</code>. 한 주문에 여러 상품 행이 있을 수 있습니다.</dd>
+        <dt>상품 수량</dt><dd>양의 정수 <code>qty</code> 합입니다. 취소·환불·순매출 계약이 아닙니다.</dd>
+        <dt>금액</dt><dd><code>qty × unit_price_krw</code>인 정수 KRW 주문품목 금액 합입니다. 결제액·정산액이 아닙니다.</dd>
+        <dt>완전성</dt><dd>기대 구간 manifest와 적재 구간의 차이로 판단합니다. 숫자 하락만으로 누락을 판정하지 않습니다.</dd>
+        <dt>현재 미적재 구간</dt><dd><code>SEG-1300</code>. 원천 archive에는 있으나 합성 수집 실행에서 빠진 회수 가능 사례입니다.</dd>
+        <dt>재실행·충돌</dt><dd>시안은 같은 fixture를 다시 계산할 뿐 저장 멱등성을 증명하지 않습니다. 실제 연결은 같은 ID·같은 내용의 재실행을 증폭시키지 않고, 같은 ID·다른 내용은 충돌로 중단해야 합니다.</dd>
+      </dl>
+      <pre id="contractCheck" class="contract-code"></pre>
+    </div>
+  </dialog>
+
+  <script id="fixture-data" type="application/json">
+  {
+    "contract": {
+      "kind": "synthetic",
+      "date": "2026-09-26",
+      "timezone": "Asia/Seoul",
+      "currency": "KRW",
+      "missing_segment_id": "SEG-1300",
+      "last_good": {"run_id": "RUN-0925-GOOD", "date": "2026-09-25", "target": "해당 날짜 전체 4개 구간", "status": "succeeded"}
+    },
+    "products": [
+      {"product_id": "P-101", "name": "데일리 머그"},
+      {"product_id": "P-205", "name": "리넨 타월"},
+      {"product_id": "P-330", "name": "수납 박스"},
+      {"product_id": "P-410", "name": "데스크 램프"}
+    ],
+    "manifest": [
+      {"segment_id": "SEG-0900", "from": "09:00", "to": "11:00", "archive_key": "archive/2026-09-26/09-11.jsonl", "archive_arrived_at": "2026-09-26T11:04:00+09:00", "initial_collected_at": "2026-09-26T11:06:00+09:00", "initial_loaded_at": "2026-09-26T11:07:00+09:00"},
+      {"segment_id": "SEG-1100", "from": "11:00", "to": "13:00", "archive_key": "archive/2026-09-26/11-13.jsonl", "archive_arrived_at": "2026-09-26T13:04:00+09:00", "initial_collected_at": "2026-09-26T13:06:00+09:00", "initial_loaded_at": "2026-09-26T13:07:00+09:00"},
+      {"segment_id": "SEG-1300", "from": "13:00", "to": "15:00", "archive_key": "archive/2026-09-26/13-15.jsonl", "archive_arrived_at": "2026-09-26T15:03:00+09:00", "initial_collected_at": null, "initial_loaded_at": null, "failed_at": "2026-09-27T08:41:00+09:00", "recovery_collected_at": "2026-09-27T08:42:00+09:00", "recovery_loaded_at": "2026-09-27T08:43:00+09:00"},
+      {"segment_id": "SEG-1500", "from": "15:00", "to": "17:00", "archive_key": "archive/2026-09-26/15-17.jsonl", "archive_arrived_at": "2026-09-26T17:04:00+09:00", "initial_collected_at": "2026-09-26T17:06:00+09:00", "initial_loaded_at": "2026-09-26T17:07:00+09:00"}
+    ],
+    "segments": [
+      {
+        "segment_id": "SEG-0900",
+        "orders": [
+          {"order_id": "ORD-2601", "occurred_at": "2026-09-26T09:18:00+09:00", "lines": [
+            {"line_id": "L1", "product_id": "P-101", "qty": 2, "unit_price_krw": 12000},
+            {"line_id": "L2", "product_id": "P-205", "qty": 1, "unit_price_krw": 18000}
+          ]},
+          {"order_id": "ORD-2602", "occurred_at": "2026-09-26T10:42:00+09:00", "lines": [
+            {"line_id": "L1", "product_id": "P-330", "qty": 1, "unit_price_krw": 32000}
+          ]}
+        ]
+      },
+      {
+        "segment_id": "SEG-1100",
+        "orders": [
+          {"order_id": "ORD-2603", "occurred_at": "2026-09-26T11:21:00+09:00", "lines": [
+            {"line_id": "L1", "product_id": "P-101", "qty": 1, "unit_price_krw": 12000},
+            {"line_id": "L2", "product_id": "P-410", "qty": 1, "unit_price_krw": 45000}
+          ]},
+          {"order_id": "ORD-2604", "occurred_at": "2026-09-26T12:36:00+09:00", "lines": [
+            {"line_id": "L1", "product_id": "P-205", "qty": 3, "unit_price_krw": 18000}
+          ]}
+        ]
+      },
+      {
+        "segment_id": "SEG-1300",
+        "orders": [
+          {"order_id": "ORD-2605", "occurred_at": "2026-09-26T13:12:00+09:00", "lines": [
+            {"line_id": "L1", "product_id": "P-101", "qty": 4, "unit_price_krw": 12000}
+          ]},
+          {"order_id": "ORD-2606", "occurred_at": "2026-09-26T13:47:00+09:00", "lines": [
+            {"line_id": "L1", "product_id": "P-330", "qty": 2, "unit_price_krw": 32000},
+            {"line_id": "L2", "product_id": "P-205", "qty": 1, "unit_price_krw": 18000}
+          ]},
+          {"order_id": "ORD-2607", "occurred_at": "2026-09-26T14:26:00+09:00", "lines": [
+            {"line_id": "L1", "product_id": "P-410", "qty": 1, "unit_price_krw": 45000}
+          ]}
+        ]
+      },
+      {
+        "segment_id": "SEG-1500",
+        "orders": [
+          {"order_id": "ORD-2608", "occurred_at": "2026-09-26T15:09:00+09:00", "lines": [
+            {"line_id": "L1", "product_id": "P-101", "qty": 1, "unit_price_krw": 12000}
+          ]},
+          {"order_id": "ORD-2609", "occurred_at": "2026-09-26T15:58:00+09:00", "lines": [
+            {"line_id": "L1", "product_id": "P-205", "qty": 2, "unit_price_krw": 18000},
+            {"line_id": "L2", "product_id": "P-410", "qty": 1, "unit_price_krw": 45000}
+          ]},
+          {"order_id": "ORD-2610", "occurred_at": "2026-09-26T16:31:00+09:00", "lines": [
+            {"line_id": "L1", "product_id": "P-330", "qty": 1, "unit_price_krw": 32000}
+          ]}
+        ]
+      }
+    ]
+  }
+  </script>
+
+  <script>
+    const fixture = JSON.parse(document.getElementById("fixture-data").textContent);
+    const issueSegmentId = fixture.contract.missing_segment_id;
+    const allSegmentIds = fixture.manifest.map((item) => item.segment_id);
+    const initialLoadedIds = allSegmentIds.filter((id) => id !== issueSegmentId);
+    const productById = new Map(fixture.products.map((item) => [item.product_id, item]));
+    const segmentById = new Map(fixture.segments.map((item) => [item.segment_id, item]));
+    const manifestById = new Map(fixture.manifest.map((item) => [item.segment_id, item]));
+    const state = {
+      view: "overview",
+      scenario: "missing",
+      selectedProduct: "P-101",
+      selectedSegmentId: issueSegmentId,
+      impactMode: "product",
+      failedAttemptSeen: false,
+    };
+
+    const money = new Intl.NumberFormat("ko-KR");
+    const number = new Intl.NumberFormat("ko-KR");
+    const byId = (id) => document.getElementById(id);
+    const displayTime = (value) => value ? value.replace("T", " ").replace(":00+09:00", " KST") : "";
+    const html = (value) => String(value)
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;")
+      .replaceAll('"', "&quot;")
+      .replaceAll("'", "&#039;");
+
+    function validateFixture() {
+      const errors = [];
+      const expectedSegments = new Set(fixture.manifest.map((item) => item.segment_id));
+      const actualSegments = new Set(fixture.segments.map((item) => item.segment_id));
+      if (expectedSegments.size !== fixture.manifest.length) errors.push("manifest segment_id 중복");
+      if ([...expectedSegments].some((id) => !actualSegments.has(id))) errors.push("manifest에 대응하는 합성 구간 없음");
+      fixture.manifest.forEach((item) => {
+        if (!item.archive_arrived_at?.endsWith("+09:00")) errors.push(`원천 도착 시각 오류: ${item.segment_id}`);
+        if (item.segment_id !== fixture.contract.missing_segment_id && (!item.initial_collected_at || !item.initial_loaded_at)) {
+          errors.push(`정상 구간 처리 시각 없음: ${item.segment_id}`);
+        }
+      });
+
+      const orderIds = new Set();
+      const lineKeys = new Set();
+      fixture.segments.forEach((segment) => {
+        segment.orders.forEach((order) => {
+          if (orderIds.has(order.order_id)) errors.push(`order_id 중복: ${order.order_id}`);
+          orderIds.add(order.order_id);
+          if (!order.occurred_at.startsWith(`${fixture.contract.date}T`) || !order.occurred_at.endsWith("+09:00")) {
+            errors.push(`시각 계약 불일치: ${order.order_id}`);
+          }
+          order.lines.forEach((line) => {
+            const key = `${order.order_id}/${line.line_id}`;
+            if (lineKeys.has(key)) errors.push(`주문품목 키 중복: ${key}`);
+            lineKeys.add(key);
+            if (!productById.has(line.product_id)) errors.push(`상품 없음: ${line.product_id}`);
+            if (!Number.isSafeInteger(line.qty) || line.qty <= 0) errors.push(`수량 오류: ${key}`);
+            if (!Number.isSafeInteger(line.unit_price_krw) || line.unit_price_krw < 0) errors.push(`단가 오류: ${key}`);
+          });
+        });
+      });
+      if (errors.length) throw new Error(errors.join("\n"));
+      return {segments: expectedSegments.size, orders: orderIds.size, lines: lineKeys.size};
+    }
+
+    const fixtureCheck = validateFixture();
+
+    function calculate(segmentIds) {
+      const chosen = new Set(segmentIds);
+      const orders = new Map();
+      const rows = [];
+      fixture.segments.filter((segment) => chosen.has(segment.segment_id)).forEach((segment) => {
+        segment.orders.forEach((order) => {
+          orders.set(order.order_id, order);
+          order.lines.forEach((line) => {
+            rows.push({
+              segment_id: segment.segment_id,
+              order_id: order.order_id,
+              occurred_at: order.occurred_at,
+              line_id: line.line_id,
+              product_id: line.product_id,
+              qty: line.qty,
+              unit_price_krw: line.unit_price_krw,
+              line_amount_krw: line.qty * line.unit_price_krw,
+            });
+          });
+        });
+      });
+      const products = new Map(fixture.products.map((item) => [item.product_id, {qty: 0, line_amount_krw: 0, rows: []}]));
+      rows.forEach((row) => {
+        const group = products.get(row.product_id);
+        group.qty += row.qty;
+        group.line_amount_krw += row.line_amount_krw;
+        group.rows.push(row);
+      });
+      return {
+        order_count: orders.size,
+        line_count: rows.length,
+        product_quantity: rows.reduce((sum, row) => sum + row.qty, 0),
+        line_amount_krw: rows.reduce((sum, row) => sum + row.line_amount_krw, 0),
+        products,
+        rows,
+      };
+    }
+
+    const partial = calculate(initialLoadedIds);
+    const complete = calculate(allSegmentIds);
+    const issueOnly = calculate([issueSegmentId]);
+
+    function segmentState(segmentId) {
+      const manifest = manifestById.get(segmentId);
+      if (segmentId !== issueSegmentId) {
+        return {archive: true, collected: true, loaded: true, label: "정상 적재", className: "ok", archiveArrivedAt: manifest.archive_arrived_at, collectedAt: manifest.initial_collected_at, loadedAt: manifest.initial_loaded_at, failedAt: null};
+      }
+      if (state.scenario === "source-pending") {
+        return {archive: false, collected: false, loaded: false, label: "원천 미도착", className: "wait", archiveArrivedAt: null, collectedAt: null, loadedAt: null, failedAt: null};
+      }
+      if (state.scenario === "recovered") {
+        return {archive: true, collected: true, loaded: true, label: "재시도 후 적재", className: "ok", archiveArrivedAt: manifest.archive_arrived_at, collectedAt: manifest.recovery_collected_at, loadedAt: manifest.recovery_loaded_at, failedAt: state.failedAttemptSeen ? manifest.failed_at : null};
+      }
+      if (state.scenario === "failed") {
+        return {archive: true, collected: false, loaded: false, label: "재처리 실패", className: "bad", archiveArrivedAt: manifest.archive_arrived_at, collectedAt: null, loadedAt: null, failedAt: manifest.failed_at};
+      }
+      return {archive: true, collected: false, loaded: false, label: "수집 실행 누락", className: "bad", archiveArrivedAt: manifest.archive_arrived_at, collectedAt: null, loadedAt: null, failedAt: null};
+    }
+
+    function currentResult() {
+      return state.scenario === "recovered" ? complete : partial;
+    }
+
+    function currentLoadedCount() {
+      return fixture.manifest.filter((item) => segmentState(item.segment_id).loaded).length;
+    }
+
+    function noticeMarkup(kind, title, description, actionLabel, actionView) {
+      const action = actionLabel ? `<button class="${kind === "ok" ? "outline-button" : "primary-button"}" type="button" data-go="${actionView}">${html(actionLabel)}</button>` : "";
+      return `<span class="notice-mark"></span><div><strong>${html(title)}</strong><span>${html(description)}</span></div>${action}`;
+    }
+
+    function renderGlobal() {
+      const chip = byId("globalStatus");
+      chip.className = "status-chip";
+      if (state.scenario === "recovered") {
+        chip.textContent = "합성 정상 복귀";
+        chip.classList.add("is-ok");
+      } else if (state.scenario === "failed") {
+        chip.textContent = "모의 재처리 실패";
+        chip.classList.add("is-failed");
+      } else if (state.scenario === "source-pending") {
+        chip.textContent = "원천 미도착 반례";
+      } else {
+        chip.textContent = "부분 결과 · 미게시";
+      }
+      document.querySelectorAll(".nav-button").forEach((button) => {
+        button.classList.toggle("is-active", button.dataset.view === state.view);
+      });
+      document.querySelectorAll(".view").forEach((view) => { view.hidden = true; });
+      byId(`${state.view}View`).hidden = false;
+      byId("overviewView").classList.toggle("is-normal", state.scenario === "recovered");
+      const titles = {
+        overview: state.scenario === "recovered" ? "어제 주문 현황" : "어제 주문 자료가 일부 부족합니다",
+        impact: state.impactMode === "segment" ? "누락 구간이 미친 영향" : "상품 수량과 거래 근거",
+        completeness: "주문 자료 처리 상태",
+        operations: "누락 구간 복구와 결과 비교",
+      };
+      byId("appTitle").textContent = titles[state.view];
+      document.querySelectorAll("[data-scenario]").forEach((button) => {
+        button.classList.toggle("is-active", button.dataset.scenario === state.scenario);
+      });
+    }
+
+    function renderOverview() {
+      const result = currentResult();
+      const recovered = state.scenario === "recovered";
+      const notice = byId("overviewNotice");
+      notice.className = `notice ${recovered ? "is-ok" : state.scenario === "failed" ? "is-error" : "is-warning"}`;
+      if (recovered) {
+        notice.innerHTML = noticeMarkup("ok", "기대 구간 4개와 적재 구간 4개가 일치합니다.", "정상 결과에서 관심 상품을 골라 주문·품목과 계산 근거를 확인할 수 있습니다.", "상품·거래 보기", "impact");
+      } else {
+        notice.innerHTML = noticeMarkup("warning", "주문 감소가 아니라 구간 불일치 때문에 확인이 필요합니다.", `기대 4개 중 ${currentLoadedCount()}개만 적재됐습니다. 13:00–15:00의 0은 주문 0이 아니라 미적재 상태입니다.`, "데이터 처리 보기", "completeness");
+      }
+      byId("resultVersions").innerHTML = `
+        <section class="result-version ${recovered ? "is-current" : "is-provisional"}">
+          <span>${recovered ? "어제 정상 복귀 결과" : "어제 잠정 계산 · 정상 게시 아님"}</span>
+          <strong>${recovered ? "RUN-0926-RETRY" : "RUN-0926-PARTIAL"}</strong>
+          <small>기준일 ${fixture.contract.date} · 대상: 기대 4개 중 적재 ${currentLoadedCount()}개 · ${recovered ? "합성 대사 성공 뒤 현재 결과" : "완전성 부족, 미게시"}</small>
+        </section>
+        <section class="result-version">
+          <span>이전 정상 게시 결과</span>
+          <strong>${fixture.contract.last_good.run_id}</strong>
+          <small>기준일 ${fixture.contract.last_good.date} · 대상: ${fixture.contract.last_good.target} · 게시 성공 · 이 시안에는 해당 판본의 지표값 미포함</small>
+        </section>`;
+      byId("overviewSummary").innerHTML = [
+        ...(recovered ? [
+          ["주문 수", `${number.format(result.order_count)}건`, "중복을 뺀 주문번호"],
+          ["상품 수량", `${number.format(result.product_quantity)}개`, "주문품목의 상품 수량 합"],
+          ["주문품목", `${number.format(result.line_count)}행`, "주문번호 안의 상품 행"],
+          ["주문품목 금액 합", `${money.format(result.line_amount_krw)}원`, "결제액 아님"],
+          ["자료 상태", "정상", "기대 수집 구간 4 / 적재 4"],
+        ] : [
+          ["기대 / 적재 구간", `4 / ${currentLoadedCount()}`, "기대 수집 구간 기준"],
+          ["부분 주문 수", `${number.format(result.order_count)}건`, "중복을 뺀 주문번호"],
+          ["부분 상품 수량", `${number.format(result.product_quantity)}개`, "주문품목의 상품 수량 합"],
+          ["주문품목 금액 합", `${money.format(result.line_amount_krw)}원`, "결제액 아님"],
+          ["게시 상태", "미게시", "이전 정상 결과 유지"],
+        ]),
+      ].map(([term, value, note]) => `<dl><dt>${term}</dt><dd>${value}<small>${note}</small></dd></dl>`).join("");
+
+      byId("overviewLead").textContent = recovered
+        ? "09:00–17:00 주문 흐름과 관심 상품에서 거래·계산 근거까지 내려갑니다."
+        : "잠정 숫자의 하락보다 먼저 기대 구간과 적재 상태가 맞는지 확인합니다.";
+      byId("trendTitle").textContent = recovered ? "09:00–17:00 주문 흐름" : "구간별 고유 주문 수";
+      byId("trendDescription").textContent = recovered
+        ? "중복을 뺀 주문번호를 두 시간 구간별로 봅니다. 이 시연 범위는 하루 전체가 아닙니다."
+        : "0도 실제 주문 0이 아니라 미적재일 수 있습니다.";
+      byId("trendScope").textContent = recovered ? "원문 주문 시각 기준" : "manifest 기준";
+      byId("overviewProductsDescription").textContent = recovered
+        ? "상품 수량을 고른 뒤 그 값을 만든 주문과 주문품목을 확인합니다."
+        : "현재 부분 결과와 archive에 남은 미적재 구간의 영향을 나눠 봅니다.";
+      byId("overviewProductHead").innerHTML = recovered
+        ? `<tr><th>상품</th><th class="number">상품 수량</th><th class="number">기여 주문</th><th class="number">주문품목 행</th><th></th></tr>`
+        : `<tr><th>상품</th><th class="number">현재 적재 수량</th><th class="number">미적재 archive 수량</th><th class="number">완전 시 수량</th><th></th></tr>`;
+
+      const maxOrders = Math.max(...fixture.segments.map((segment) => segment.orders.length));
+      byId("trend").innerHTML = fixture.manifest.map((manifest) => {
+        const segState = segmentState(manifest.segment_id);
+        const orders = segState.loaded ? segmentById.get(manifest.segment_id).orders.length : 0;
+        const height = Math.max(orders ? 18 : 8, Math.round((orders / maxOrders) * 82));
+        const stateLabel = segState.loaded ? `${orders}건` : "미적재";
+        return `<div class="trend-column"><div class="bar-track"><span class="bar-value" style="--bar-height:${height}%">${stateLabel}</span><span class="bar ${segState.loaded ? "" : "is-missing"}" style="height:${height}%"></span></div><strong>${manifest.from}–${manifest.to}</strong><span>${segState.label}</span></div>`;
+      }).join("");
+
+      byId("overviewProducts").innerHTML = fixture.products.map((product) => {
+        const now = result.products.get(product.product_id).qty;
+        const productRows = result.products.get(product.product_id).rows;
+        const productOrders = new Set(productRows.map((row) => row.order_id)).size;
+        const issue = state.scenario === "source-pending" ? null : issueOnly.products.get(product.product_id).qty;
+        const finalValue = state.scenario === "source-pending" ? null : partial.products.get(product.product_id).qty + issueOnly.products.get(product.product_id).qty;
+        if (recovered) {
+          return `<tr><td><strong>${html(product.product_id)}</strong><br><span class="panel-note">${html(product.name)}</span></td><td class="number">${number.format(now)}</td><td class="number">${number.format(productOrders)}건</td><td class="number">${number.format(productRows.length)}행</td><td><button class="row-button" type="button" data-show-product="${html(product.product_id)}">거래 근거</button></td></tr>`;
+        }
+        return `<tr><td><strong>${html(product.product_id)}</strong><br><span class="panel-note">${html(product.name)}</span></td><td class="number">${number.format(now)}</td><td class="number">${issue === null ? "확인 불가" : number.format(issue)}</td><td class="number">${finalValue === null ? "확인 불가" : number.format(finalValue)}</td><td><button class="row-button" type="button" data-show-product="${html(product.product_id)}">거래 근거</button></td></tr>`;
+      }).join("");
+
+      if (recovered) {
+        byId("overviewStepsTitle").textContent = "다음 탐색";
+        byId("overviewStepsDescription").textContent = "현황 숫자를 주문·품목과 계산 기준으로 설명합니다.";
+        byId("overviewSteps").innerHTML = [
+          ["1", "관심 상품을 선택", "상품 수량과 기여 주문 수를 함께 봅니다."],
+          ["2", "주문·품목을 확인", "어떤 주문번호와 상품 행이 숫자에 들어갔는지 엽니다."],
+          ["3", "계산 범위를 읽기", "2026-09-26 09:00–17:00, 상품별 수량 합이라는 기준을 확인합니다."],
+          ["4", "문제가 의심되면 처리 상태로 이동", "기대 수집 구간과 실행 상태를 별도 근거로 확인합니다."],
+        ].map(([index, title, description]) => `<div class="step"><span class="step-index">${index}</span><div><strong>${title}</strong><span>${description}</span></div></div>`).join("");
+        byId("overviewNextActions").innerHTML = `<button class="primary-button" type="button" data-show-product="${html(state.selectedProduct)}">선택 상품의 거래 근거</button><button class="outline-button" type="button" data-go="completeness">데이터 처리 상태</button>`;
+      } else {
+        byId("overviewStepsTitle").textContent = "이상 확인 순서";
+        byId("overviewStepsDescription").textContent = "수치 해석보다 자료 상태를 먼저 좁힙니다.";
+        byId("overviewSteps").innerHTML = [
+          ["1", "이상한 숫자를 발견", "13:00–15:00 구간이 0으로 보이지만 아직 주문 0으로 판정하지 않습니다."],
+          ["2", "기대 구간과 적재 상태 대조", "기대 수집 구간 목록에 있는 구간이 적재됐는지 확인합니다."],
+          ["3", "원천 확보 여부 확인", "원천 보관자료가 있으면 회수 후보, 없으면 재처리만으로 만들 수 없습니다."],
+          ["4", "성공 뒤 결과와 근거 비교", "정상 지표·기여 주문품목·전후 결과를 함께 읽습니다."],
+        ].map(([index, title, description]) => `<div class="step"><span class="step-index">${index}</span><div><strong>${title}</strong><span>${description}</span></div></div>`).join("");
+        byId("overviewNextActions").innerHTML = `<button class="primary-button" type="button" data-go="completeness">데이터 처리에서 근거 확인</button>`;
+      }
+    }
+
+    function renderCompleteness() {
+      const notice = byId("completenessNotice");
+      const recovered = state.scenario === "recovered";
+      const sourcePending = state.scenario === "source-pending";
+      notice.className = `notice ${recovered ? "is-ok" : "is-warning"}`;
+      if (recovered) {
+        notice.innerHTML = noticeMarkup("ok", "기대 수집 구간과 적재 결과가 일치합니다.", "네 구간의 원천 도착·수집·적재가 모두 확인됐습니다.", "정상 쇼핑 현황", "overview");
+      } else if (sourcePending) {
+        notice.innerHTML = noticeMarkup("warning", "기대 구간의 원천 보관자료가 아직 없습니다.", "재처리만으로 데이터를 만들 수 없습니다. 원천 도착과 지문 확인이 먼저입니다.");
+      } else {
+        notice.innerHTML = `<span class="notice-mark"></span><div><strong>원천 보관자료는 있지만 수집 실행에서 한 구간이 빠졌습니다.</strong><span>SEG-1300은 보관자료가 있어 정확한 구간을 선택해 회수할 수 있습니다.</span></div><button class="primary-button" type="button" data-segment="${issueSegmentId}">SEG-1300 영향 보기</button>`;
+      }
+      byId("manifestCount").textContent = `기대 4 · 적재 ${currentLoadedCount()}`;
+      byId("manifestRows").innerHTML = fixture.manifest.map((manifest) => {
+        const segState = segmentState(manifest.segment_id);
+        const issue = manifest.segment_id === issueSegmentId;
+        const action = issue
+          ? `<button class="row-button" type="button" data-segment="${manifest.segment_id}">영향 보기</button>`
+          : `<span class="muted">확인 불필요</span>`;
+        return `<tr class="${issue ? "is-issue is-selected" : ""}"><td><strong>${manifest.segment_id}</strong></td><td>${fixture.contract.date} ${manifest.from}–${manifest.to}</td><td><span class="status ok">예</span></td><td>${segState.archive ? `<span class="status ok">확보</span>` : `<span class="status wait">미도착</span>`}<br><span class="manifest-key">${segState.archive ? html(manifest.archive_key) : "-"}</span>${segState.archiveArrivedAt ? `<span class="time-note">도착 ${html(displayTime(segState.archiveArrivedAt))}</span>` : ""}</td><td><span class="status ${segState.collected ? "ok" : segState.className}">${segState.collected ? "완료" : segState.label}</span>${segState.collectedAt ? `<span class="time-note">수집 ${html(displayTime(segState.collectedAt))}</span>` : segState.failedAt ? `<span class="time-note">실패 ${html(displayTime(segState.failedAt))}</span>` : ""}</td><td><span class="status ${segState.loaded ? "ok" : "bad"}">${segState.loaded ? "완료" : "미적재"}</span>${segState.loadedAt ? `<span class="time-note">처리 ${html(displayTime(segState.loadedAt))}</span>` : ""}</td><td>${segState.loaded ? "완전성 충족" : "완전성 부족"}</td><td>${action}</td></tr>`;
+      }).join("");
+    }
+
+    function renderImpact() {
+      if (state.impactMode === "segment") {
+        renderSegmentImpact();
+      } else {
+        renderProductImpact();
+      }
+    }
+
+    function renderProductImpact() {
+      const product = productById.get(state.selectedProduct) || fixture.products[0];
+      state.selectedProduct = product.product_id;
+      const result = currentResult();
+      const productResult = result.products.get(product.product_id);
+      const contributingOrders = new Set(productResult.rows.map((row) => row.order_id)).size;
+      const recovered = state.scenario === "recovered";
+
+      byId("impactTitle").textContent = "상품·거래";
+      byId("impactDescription").textContent = "관심 상품의 숫자에서 기여 주문품목과 계산 기준으로 내려갑니다.";
+      byId("impactSegmentBadge").textContent = `${product.product_id} · ${fixture.contract.date} 09:00–17:00`;
+      const notice = byId("impactNotice");
+      notice.className = `notice ${recovered ? "is-ok" : "is-warning"}`;
+      notice.innerHTML = recovered
+        ? noticeMarkup("ok", `${product.product_id} 수량 ${number.format(productResult.qty)}개의 근거입니다.`, `${number.format(contributingOrders)}개 주문의 ${number.format(productResult.rows.length)}개 품목 행을 합했습니다.`)
+        : noticeMarkup("warning", `${product.product_id}의 잠정 수량 ${number.format(productResult.qty)}개입니다.`, "적재된 세 구간만 포함한 부분 결과이므로 정상 게시 결과로 쓰지 않습니다.", "데이터 처리 상태", "completeness");
+
+      byId("impactSummaryTitle").textContent = "상품 요약";
+      byId("impactSummaryDescription").textContent = "같은 상품 코드의 상품 수량을 합하고 주문과 품목 행을 따로 셉니다.";
+      byId("impactSummary").innerHTML = [
+        ["상품 수량", `${number.format(productResult.qty)}개`],
+        ["기여 주문", `${number.format(contributingOrders)}건`],
+        ["주문품목", `${number.format(productResult.rows.length)}행`],
+      ].map(([label, value]) => `<div class="impact-box"><span>${label}</span><strong>${value}</strong></div>`).join("");
+
+      byId("impactTableTitle").textContent = "기여 주문품목";
+      byId("impactTableDescription").textContent = "각 주문품목의 상품 수량을 더한 값이 위 수량입니다.";
+      byId("impactTableHead").innerHTML = `<tr><th>주문 / 품목</th><th>주문 발생 시각</th><th>수집 구간</th><th class="number">수량</th><th class="number">품목 금액</th></tr>`;
+      byId("impactProducts").innerHTML = productResult.rows.length
+        ? productResult.rows.map((row) => `<tr><td><strong>${html(row.order_id)}</strong><br><span class="panel-note">${html(row.line_id)}</span></td><td>${html(displayTime(row.occurred_at))}</td><td>${html(row.segment_id)}</td><td class="number">${number.format(row.qty)}</td><td class="number">${money.format(row.line_amount_krw)}원</td></tr>`).join("")
+        : `<tr><td colspan="5">이 표시 결과에 기여한 주문품목이 없습니다. 0개로 바꾸어 표시하지 않습니다.</td></tr>`;
+
+      byId("sourcePanelTitle").textContent = "계산 기준";
+      byId("sourcePanelDescription").textContent = "표시 숫자의 범위와 묶는 기준을 확인합니다.";
+      byId("sourceState").innerHTML = `
+        <dt>결과 실행</dt><dd>${recovered ? "RUN-0926-RETRY · 정상 복귀" : "RUN-0926-PARTIAL · 잠정 계산"}</dd>
+        <dt>주문 발생 범위</dt><dd>${fixture.contract.date} 09:00–17:00 · Asia/Seoul · 하루 전체 아님</dd>
+        <dt>상품 코드</dt><dd>${html(product.product_id)}</dd>
+        <dt>상품 수량</dt><dd>주문품목 수량의 합 = ${number.format(productResult.qty)} · SQL 기준 SUM(qty)</dd>
+        <dt>주문 수</dt><dd>중복을 뺀 주문번호 = ${number.format(contributingOrders)}</dd>
+        <dt>금액</dt><dd>qty × unit_price_krw의 품목 금액 합 · 결제액 아님</dd>`;
+      const callout = byId("sourceCallout");
+      callout.className = "callout is-blue";
+      callout.innerHTML = `<strong>이 숫자가 답하는 것</strong>${html(product.name)}의 선택 범위 수량과 그 값을 만든 주문품목입니다. 하루 전체 주문이나 결제액을 뜻하지 않습니다.`;
+      byId("impactActions").innerHTML = `<button class="primary-button" type="button" data-go="overview">쇼핑 현황으로 돌아가기</button><button class="outline-button" type="button" data-go="completeness">데이터 처리 상태</button>`;
+    }
+
+    function renderSegmentImpact() {
+      const segmentId = state.selectedSegmentId;
+      const seg = manifestById.get(segmentId);
+      const segState = segmentState(segmentId);
+      const available = segState.archive;
+      const segmentResult = calculate([segmentId]);
+
+      byId("impactTitle").textContent = "누락 구간과 영향";
+      byId("impactDescription").textContent = "선택한 구간이 어떤 상품 숫자와 원천 확보 상태에 연결되는지 봅니다.";
+      byId("impactSegmentBadge").textContent = `${segmentId} · ${seg.from}–${seg.to}`;
+      const notice = byId("impactNotice");
+      notice.className = `notice ${available && state.scenario === "recovered" ? "is-ok" : "is-warning"}`;
+      notice.innerHTML = available
+        ? noticeMarkup(state.scenario === "recovered" ? "ok" : "warning", state.scenario === "recovered" ? `${segmentId}은 모의 재시도 뒤 적재됐습니다.` : `${segmentId}은 archive에서 회수할 수 있습니다.`, "파일 지문과 구간을 고정하고, 재계산·대사 성공 뒤에만 게시합니다.")
+        : noticeMarkup("warning", `${segmentId} archive가 없어 영향 값도 확정할 수 없습니다.`, "원천 도착 확인이 먼저이며 재처리만으로 기록을 만들지 않습니다.");
+
+      byId("impactSummaryTitle").textContent = "영향 요약";
+      byId("impactSummaryDescription").textContent = "선택한 구간의 원천 보관자료에 있는 주문품목만 계산합니다.";
+      byId("impactSummary").innerHTML = [
+        ["영향 주문", available ? `${segmentResult.order_count}건` : "확인 불가"],
+        ["영향 주문품목", available ? `${segmentResult.line_count}행` : "확인 불가"],
+        ["영향 상품 수량", available ? `${segmentResult.product_quantity}개` : "확인 불가"],
+      ].map(([label, value]) => `<div class="impact-box"><span>${label}</span><strong>${value}</strong></div>`).join("");
+
+      byId("impactTableTitle").textContent = "영향 상품";
+      byId("impactTableDescription").textContent = "현재 부분 결과와 선택 구간 기여를 나눠 봅니다.";
+      byId("impactTableHead").innerHTML = `<tr><th>상품</th><th class="number">현재 적재</th><th class="number">구간 기여</th><th class="number">대사 후 예상</th></tr>`;
+      byId("impactProducts").innerHTML = fixture.products.map((product) => {
+        const before = partial.products.get(product.product_id).qty;
+        const added = available ? segmentResult.products.get(product.product_id).qty : null;
+        return `<tr><td><strong>${html(product.product_id)}</strong><br><span class="panel-note">${html(product.name)}</span></td><td class="number">${number.format(before)}</td><td class="number">${added === null ? "확인 불가" : `+${number.format(added)}`}</td><td class="number">${added === null ? "확인 불가" : number.format(before + added)}</td></tr>`;
+      }).join("");
+
+      byId("sourcePanelTitle").textContent = "원천 확보 상태";
+      byId("sourcePanelDescription").textContent = "실행 가능 여부를 숫자와 분리합니다.";
+      byId("sourceState").innerHTML = `
+        <dt>주문 발생 범위</dt><dd>${segmentId} · ${fixture.contract.date} ${seg.from}–${seg.to} · Asia/Seoul</dd>
+        <dt>원천 보관자료 도착</dt><dd>${available ? `${html(displayTime(segState.archiveArrivedAt))} · ${html(seg.archive_key)}` : "미도착 · 시각/경로/지문 없음"}</dd>
+        <dt>수집 완료</dt><dd>${segState.collectedAt ? html(displayTime(segState.collectedAt)) : segState.failedAt ? `실패 ${html(displayTime(segState.failedAt))}` : segState.label}</dd>
+        <dt>처리 완료</dt><dd>${segState.loadedAt ? html(displayTime(segState.loadedAt)) : "미완료 · 정상 게시 대상 아님"}</dd>
+        <dt>선택 범위</dt><dd>${available ? `${segmentId} 한 구간` : "선택 불가"}</dd>`;
+      const callout = byId("sourceCallout");
+      callout.className = `callout ${available ? "" : "is-blue"}`;
+      callout.innerHTML = available
+        ? `<strong>실행 전 조건</strong>원천 보관자료 지문·행 수·구간 ID를 확인한 뒤 처리하고, 부분 결과와 정상 결과를 대사합니다.`
+        : `<strong>재처리 불가</strong>원천 보관자료가 도착하기 전에는 성공 결과를 만들 수 없습니다.`;
+      byId("impactActions").innerHTML = `<button class="primary-button" type="button" data-go="operations" ${available ? "" : "disabled"}>문제·복구에서 모의 흐름 보기</button><button class="outline-button" type="button" data-go="completeness">manifest로 돌아가기</button>`;
+    }
+
+    function renderOperations() {
+      const sourcePending = state.scenario === "source-pending";
+      const recovered = state.scenario === "recovered";
+      const failed = state.scenario === "failed";
+      const badge = byId("operationBadge");
+      badge.className = "status-chip";
+      badge.textContent = recovered ? "합성 성공 게시" : failed ? "모의 실행 실패" : sourcePending ? "원천 대기" : "실행 전";
+      if (recovered) badge.classList.add("is-ok");
+      if (failed) badge.classList.add("is-failed");
+      const notice = byId("operationNotice");
+      notice.className = `notice ${recovered ? "is-ok" : failed ? "is-error" : "is-warning"}`;
+      if (recovered) {
+        notice.innerHTML = noticeMarkup("ok", "완전성·주문·품목 대사를 통과한 결과만 현재 결과로 표시합니다.", "정상 현황은 10건·22개·485,000원이며 각 상품에서 기여 주문품목을 열 수 있습니다.", "정상 쇼핑 현황", "overview");
+      } else if (failed) {
+        notice.innerHTML = noticeMarkup("error", "모의 재처리가 실패했습니다.", "부분 계산은 잠정 상태로 남고 이전 정상 게시 RUN-0925-GOOD를 덮지 않습니다.");
+      } else if (sourcePending) {
+        notice.innerHTML = noticeMarkup("warning", "원천 미도착 상태에서는 실행하지 않습니다.", "없는 원천 보관자료를 재처리로 만들 수 없으므로 원천 도착 확인으로 돌아갑니다.", "데이터 처리로 돌아가기", "completeness");
+      } else {
+        notice.innerHTML = noticeMarkup("warning", "회수 가능한 SEG-1300을 선택했습니다.", "다음 버튼은 실패와 재시도를 검토하는 모의 전환이며 실제 job을 시작하지 않습니다.");
+      }
+      byId("operationConditions").innerHTML = `
+        <dt>선택 구간</dt><dd>${issueSegmentId}만</dd>
+        <dt>원천 보관자료</dt><dd>${sourcePending ? "미도착" : "확보·지문 확인 가정"}</dd>
+        <dt>게시 전 검사</dt><dd>기대 구간 4=적재 4, 주문·품목·상품 합계 대사</dd>
+        <dt>실패 시</dt><dd>부분 결과 미게시, ${fixture.contract.last_good.run_id} 유지</dd>`;
+      const actions = byId("operationActions");
+      if (sourcePending) {
+        actions.innerHTML = `<button class="outline-button" type="button" data-go="completeness">원천 상태 확인</button><button class="primary-button" type="button" disabled>모의 재처리 실행 불가</button>`;
+      } else if (recovered) {
+        actions.innerHTML = `<button class="primary-button" type="button" data-go="overview">정상 쇼핑 현황</button><button class="outline-button" type="button" data-action="reset-missing">누락 상태로 되돌려 보기</button>`;
+      } else if (failed) {
+        actions.innerHTML = `<button class="primary-button" type="button" data-action="simulate-success">모의 재시도 · 성공 보기</button><button class="outline-button" type="button" data-segment="${issueSegmentId}">원천 상태 다시 확인</button>`;
+      } else {
+        actions.innerHTML = `<button class="danger-button" type="button" data-action="simulate-failure">모의 1차 실행 · 실패 보기</button><button class="outline-button" type="button" data-action="simulate-success">모의 정상 복귀 바로 보기</button>`;
+      }
+      const history = [
+        {id: fixture.contract.last_good.run_id, status: "성공", klass: "ok", text: `${fixture.contract.last_good.date} · ${fixture.contract.last_good.target} · 이전 정상 게시 · 이 시안에 지표값 없음`},
+        {id: "RUN-0926-PARTIAL", status: "부분", klass: "wait", text: `${fixture.contract.date} · 기대 4 / 적재 3 · 잠정 계산, 미게시`},
+      ];
+      if (failed || state.failedAttemptSeen) history.push({id: "RUN-0926-REC-1", status: "실패", klass: "bad", text: `${displayTime(manifestById.get(issueSegmentId).failed_at)} · SEG-1300 처리 실패 · last-good 유지`});
+      if (recovered) history.push({id: "RUN-0926-RETRY", status: "성공", klass: "ok", text: `${displayTime(manifestById.get(issueSegmentId).recovery_loaded_at)} · 합성 대사 후 현재 결과로 전환`});
+      byId("runHistory").innerHTML = history.map((run) => `<div class="run-row"><code>${run.id}</code><span class="status ${run.klass}">${run.status}</span><span>${run.text}</span></div>`).join("");
+
+      byId("comparisonSummary").innerHTML = `
+        <div><span>비교 상태</span><strong>${recovered ? "부분 → 정상 복귀" : "정상 결과 미게시"}</strong></div>
+        <div><span>고유 주문</span><strong>${partial.order_count} → ${recovered ? complete.order_count : "-"}</strong></div>
+        <div><span>상품 수량</span><strong>${partial.product_quantity} → ${recovered ? complete.product_quantity : "-"}</strong></div>
+        <div><span>주문품목 금액 합</span><strong>${money.format(partial.line_amount_krw)} → ${recovered ? money.format(complete.line_amount_krw) : "-"}</strong></div>`;
+      byId("comparisonProducts").innerHTML = fixture.products.map((product) => {
+        const before = partial.products.get(product.product_id).qty;
+        const after = recovered ? complete.products.get(product.product_id).qty : null;
+        const selected = state.selectedProduct === product.product_id;
+        return `<tr class="${selected ? "is-selected" : ""}"><td><strong>${product.product_id}</strong><br><span class="panel-note">${product.name}</span></td><td class="number">${before}</td><td class="number">${after === null ? "미게시" : after}</td><td class="number delta">${after === null ? "-" : `+${after - before}`}</td><td><button class="row-button" type="button" data-product="${product.product_id}">기여 거래</button></td></tr>`;
+      }).join("");
+      renderContributions(recovered);
+    }
+
+    function renderContributions(recovered) {
+      const product = productById.get(state.selectedProduct) || fixture.products[0];
+      state.selectedProduct = product.product_id;
+      const beforeRows = partial.products.get(product.product_id).rows;
+      const afterRows = recovered ? complete.products.get(product.product_id).rows : [];
+      byId("detailTitle").textContent = `${product.product_id} · ${product.name}`;
+      byId("detailMeta").textContent = recovered ? "부분 결과와 정상 복귀 결과의 기여 주문품목" : "정상 복귀 전에는 부분 기여만 표시";
+      const renderRows = (rows, addedMode) => rows.length
+        ? rows.map((row) => {
+          const added = addedMode && row.segment_id === issueSegmentId;
+          return `<div class="contribution ${added ? "is-added" : ""}"><strong>${row.order_id} / ${row.line_id} · 수량 ${row.qty}</strong><span>${row.occurred_at} · ${row.segment_id} · ${money.format(row.line_amount_krw)}원${added ? " · 복구 구간 기여" : ""}</span></div>`;
+        }).join("")
+        : `<p class="panel-note">기여 주문품목 없음</p>`;
+      byId("contributionGrid").innerHTML = `
+        <section class="contribution-side"><h4>부분 결과 · ${beforeRows.length}행</h4>${renderRows(beforeRows, false)}</section>
+        <section class="contribution-side"><h4>${recovered ? `정상 복귀 · ${afterRows.length}행` : "정상 결과 · 미게시"}</h4>${recovered ? renderRows(afterRows, true) : `<p class="panel-note">재처리·대사 성공 전에는 정상 결과를 만든 척하지 않습니다.</p>`}</section>`;
+    }
+
+    function renderAll() {
+      renderGlobal();
+      renderOverview();
+      renderCompleteness();
+      renderImpact();
+      renderOperations();
+      byId("contractCheck").textContent = [
+        `fixture validation: PASS`,
+        `segments=${fixtureCheck.segments}, orders=${fixtureCheck.orders}, order_lines=${fixtureCheck.lines}`,
+        `partial: orders=${partial.order_count}, qty=${partial.product_quantity}, line_amount_krw=${partial.line_amount_krw}`,
+        `complete: orders=${complete.order_count}, qty=${complete.product_quantity}, line_amount_krw=${complete.line_amount_krw}`,
+        `missing ${issueSegmentId}: orders=${issueOnly.order_count}, qty=${issueOnly.product_quantity}, line_amount_krw=${issueOnly.line_amount_krw}`,
+      ].join("\n");
+    }
+
+    function goTo(view) {
+      state.view = view;
+      renderAll();
+      window.scrollTo({top: 0, behavior: "auto"});
+    }
+
+    document.addEventListener("click", (event) => {
+      const nav = event.target.closest("[data-view]");
+      if (nav) {
+        if (nav.dataset.view === "impact") state.impactMode = "product";
+        return goTo(nav.dataset.view);
+      }
+      const go = event.target.closest("[data-go]");
+      if (go) {
+        if (go.dataset.go === "impact") state.impactMode = "product";
+        return goTo(go.dataset.go);
+      }
+      const scenario = event.target.closest("[data-scenario]");
+      if (scenario) {
+        state.scenario = scenario.dataset.scenario;
+        state.failedAttemptSeen = false;
+        renderAll();
+        return;
+      }
+      const segment = event.target.closest("[data-segment]");
+      if (segment) {
+        state.selectedSegmentId = segment.dataset.segment;
+        state.impactMode = "segment";
+        return goTo("impact");
+      }
+      const overviewProduct = event.target.closest("[data-show-product]");
+      if (overviewProduct) {
+        state.selectedProduct = overviewProduct.dataset.showProduct;
+        state.impactMode = "product";
+        return goTo("impact");
+      }
+      const product = event.target.closest("[data-product]");
+      if (product) {
+        state.selectedProduct = product.dataset.product;
+        renderOperations();
+        return;
+      }
+      const action = event.target.closest("[data-action]");
+      if (action?.dataset.action === "simulate-failure") {
+        state.scenario = "failed";
+        state.failedAttemptSeen = true;
+        renderAll();
+      } else if (action?.dataset.action === "simulate-success") {
+        state.scenario = "recovered";
+        renderAll();
+      } else if (action?.dataset.action === "reset-missing") {
+        state.scenario = "missing";
+        state.failedAttemptSeen = false;
+        renderAll();
+      }
+    });
+
+    byId("contractButton").addEventListener("click", () => byId("contractDialog").showModal());
+    byId("closeContract").addEventListener("click", () => byId("contractDialog").close());
+    byId("contractDialog").addEventListener("click", (event) => {
+      if (event.target === byId("contractDialog")) byId("contractDialog").close();
+    });
+
+    renderAll();
+  </script>
+</body>
+</html>

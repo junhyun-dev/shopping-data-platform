@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>쇼핑 데이터 운영</title>
+  <link rel="stylesheet" href="/platform.css">
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <p class="eyebrow">실제 로컬 처리 · 합성 원천</p>
+      <h1>쇼핑 데이터 운영</h1>
+    </div>
+    <div class="top-actions">
+      <span id="headerState" class="status">불러오는 중</span>
+      <a href="/platform-preview.html">모의 시안 보기</a>
+    </div>
+  </header>
+
+  <nav aria-label="주요 화면">
+    <button class="nav-button active" data-view="overview">쇼핑 현황</button>
+    <button class="nav-button" data-view="product">상품·거래</button>
+    <button class="nav-button" data-view="processing">데이터 처리</button>
+    <button class="nav-button" data-view="recovery">문제·복구</button>
+  </nav>
+
+  <main>
+    <div id="globalError" class="error-banner hidden" role="alert"></div>
+
+    <section id="overviewView" class="view active" aria-labelledby="overviewTitle">
+      <div class="view-head">
+        <div>
+          <p id="overviewKicker" class="kicker"></p>
+          <h2 id="overviewTitle">쇼핑 현황</h2>
+          <p id="overviewDescription" class="muted"></p>
+        </div>
+        <button id="overviewNext" class="primary"></button>
+      </div>
+      <dl id="summary" class="summary"></dl>
+      <div class="section-head">
+        <div>
+          <h3>관심 상품</h3>
+          <p>상품 수량에서 주문·품목과 계산 SQL까지 내려갑니다.</p>
+        </div>
+        <span id="runLabel" class="run-label"></span>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>상품</th><th class="number">상품 수량</th><th class="number">주문</th><th class="number">품목 행</th><th class="number">주문품목액</th><th></th></tr></thead>
+          <tbody id="productRows"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="productView" class="view" aria-labelledby="productTitle">
+      <div class="view-head">
+        <div><p class="kicker">숫자의 구성</p><h2 id="productTitle">상품·거래</h2><p id="productContext" class="muted">현황에서 상품을 선택하세요.</p></div>
+        <button id="backOverview" class="secondary">현황으로</button>
+      </div>
+      <div id="productEmpty" class="empty">상품을 선택하면 기여 주문·품목을 볼 수 있습니다.</div>
+      <div id="productDetail" class="hidden">
+        <dl id="productSummary" class="summary compact"></dl>
+        <div class="tabs" role="tablist">
+          <button class="tab active" data-tab="contributions">기여 주문·품목</button>
+          <button class="tab" data-tab="sql">계산 SQL</button>
+          <button class="tab" data-tab="sources">원천 위치</button>
+        </div>
+        <div id="contributionsPanel" class="tab-panel">
+          <div class="table-wrap"><table><thead><tr><th>주문번호 / 품목</th><th>발생시각</th><th>구간</th><th class="number">수량</th><th class="number">단가</th><th class="number">품목액</th><th>원천 위치</th></tr></thead><tbody id="contributionRows"></tbody></table></div>
+        </div>
+        <pre id="sqlPanel" class="tab-panel hidden"></pre>
+        <div id="sourcesPanel" class="tab-panel hidden"></div>
+      </div>
+    </section>
+
+    <section id="processingView" class="view" aria-labelledby="processingTitle">
+      <div class="view-head"><div><p class="kicker">기대 구간과 실제 처리</p><h2 id="processingTitle">데이터 처리</h2><p class="muted">09:00~17:00 네 구간만 다루는 시연입니다. 하루 전체가 아닙니다.</p></div><button id="processingRefresh" class="secondary">상태 다시 읽기</button></div>
+      <div class="table-wrap"><table><thead><tr><th>기대 수집 구간</th><th>시간</th><th>원천 보관자료</th><th>적재 상태</th><th>원천 도착</th></tr></thead><tbody id="segmentRows"></tbody></table></div>
+      <details class="contract"><summary>처리 계약 보기</summary><p>기대 구간 목록과 파일 지문이 일치해야 처리합니다. 원천을 읽은 것만으로 정상 게시하지 않고, 관계·집계·독립 합계까지 맞은 완전 결과만 현재 정상 결과가 됩니다. 주문품목액은 합성 품목의 수량×정수 원화 단가이며 결제액이 아닙니다.</p></details>
+    </section>
+
+    <section id="recoveryView" class="view" aria-labelledby="recoveryTitle">
+      <div class="view-head"><div><p class="kicker">누락 근거부터 정상 게시까지</p><h2 id="recoveryTitle">문제·복구</h2><p id="recoveryDescription" class="muted"></p></div><button id="recoveryRefresh" class="secondary">상태 다시 읽기</button></div>
+      <article id="recoveryPlan" class="plan"></article>
+      <article id="recoveryComparison" class="comparison hidden"></article>
+      <div class="section-head"><div><h3>처리 이력</h3><p>실패와 성공을 실제 저장 상태에서 읽습니다.</p></div></div>
+      <div class="table-wrap"><table><thead><tr><th>실행</th><th>종류</th><th>상태</th><th>선택 구간</th><th>완료</th><th>오류</th></tr></thead><tbody id="runRows"></tbody></table></div>
+    </section>
+  </main>
+  <script src="/platform.js" defer></script>
+</body>
+</html>
